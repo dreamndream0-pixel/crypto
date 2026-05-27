@@ -116,20 +116,11 @@
 
 <div class="wrap">
   <div class="bar">
-    <input class="key-input" type="password" id="apiKey" placeholder="貼上 Groq API Key（console.groq.com/keys 免費取得）">
-    <button class="btn ghost" id="cfgBtn">⚙️ Proxy</button>
-    <button class="btn ghost" id="scanBtn">🔍 掃描全市場</button>
+    <input class="key-input" type="password" id="accessToken" placeholder="🔐 輸入存取密碼（Worker 環境變數設定的）">
+    <button class="btn ghost" id="tokenSave" style="padding:11px 18px">儲存密碼</button>
+    <button class="btn" id="autoToggle" style="padding:11px 18px">▶ 開啟自動掃描</button>
   </div>
-  <div id="cfgBox" class="hidden" style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px">
-    <div style="font-size:12px;color:var(--dim);margin-bottom:10px;line-height:1.6">
-      貼上你部署好的 <b style="color:var(--text)">Cloudflare Worker 網址</b>（用來抓真實幣安數據、解決 CORS）。<br>
-      格式像：<span class="mono" style="color:var(--cyan)">https://你的名稱.workers.dev</span>
-    </div>
-    <div style="display:flex;gap:10px">
-      <input class="key-input" type="text" id="proxyInput" placeholder="https://xxx.workers.dev" style="flex:1">
-      <button class="btn" id="proxySave">儲存</button>
-    </div>
-  </div>
+  <div id="scanStatus" style="font-size:11px;color:var(--cyan);font-family:'Chakra Petch',monospace;margin-bottom:14px;min-height:16px"></div>
   <div class="err" id="errBox"></div>
 
   <div id="scanArea" class="hidden">
@@ -139,7 +130,6 @@
         <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite"></span>
         <span id="liveText">即時更新中</span>
       </span>
-      <button id="liveToggle" class="btn ghost" style="margin-left:auto;padding:5px 12px;font-size:11px">▶ 開啟即時</button>
     </div>
     <div class="scan">
       <div class="col long">
@@ -340,17 +330,23 @@ const AGENTS=[
   {id:'macro',name:'總經派',ico:'🌐',persona:'大格局',focus:'美聯儲、利率、美元'},
 ];
 const labelMap={buy:'買入',sell:'賣出',hold:'觀望'};
-let KEY='',MODEL='llama-3.3-70b-versatile';
+let ACCESS_TOKEN=localStorage.getItem('accessToken')||'',MODEL='llama-3.3-70b-versatile';
 let MKT=[],SCREENED={},R1={},R2={},curCoin=null;
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
 async function groq(system,user){
-  const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
-    method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+KEY},
+  if(!ACCESS_TOKEN) throw new Error('尚未設定存取密碼');
+  const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=groq',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-Access-Token':ACCESS_TOKEN},
     body:JSON.stringify({model:MODEL,messages:[{role:'system',content:system},{role:'user',content:user}],temperature:0.6,response_format:{type:'json_object'}})
   });
-  if(!res.ok)throw new Error('Groq '+res.status+': '+(await res.text()).slice(0,160));
+  if(!res.ok){
+    const t=await res.text();
+    if(res.status===401) throw new Error('密碼錯誤，請重新設定');
+    throw new Error('Groq '+res.status+': '+t.slice(0,160));
+  }
   return (await res.json()).choices[0].message.content;
 }
 function pj(t){t=t.replace(/```json/g,'').replace(/```/g,'').trim();const s=t.indexOf('{'),e=t.lastIndexOf('}');if(s>=0)t=t.slice(s,e+1);return JSON.parse(t);}
@@ -403,17 +399,15 @@ async function doScan(silent=false){
   if(!silent) $('errBox').style.display='none';
   if(!PROXY_URL){
     $('errBox').style.display='block';
-    $('errBox').innerHTML='尚未設定幣安 Proxy 網址。請點上方 ⚙️ 設定，貼上你的 Cloudflare Worker 網址。';
+    $('errBox').innerHTML='尚未設定幣安 Proxy 網址';
     return;
   }
-  const btn=$('scanBtn');
-  if(!silent){ btn.disabled=true;btn.textContent='◌ 抓取幣安數據中...'; }
+  const showStatus=(txt)=>{ if(liveOn) $('scanStatus').textContent=txt; };
   $('scanArea').classList.remove('hidden');
   try{
-    // 階段1：抓全市場真實數據（24h漲跌、量、資金費率）
-    btn.textContent='◌ 抓取全市場行情...';
+    // 階段1：抓全市場真實數據
+    showStatus('⚡ 抓取全市場行情...');
     let market=await fetchMarket();
-    // 標註大幣
     market=market.map(c=>({...c,isMajor:MAJORS.includes(c.symbol),sym:c.symbol}));
 
     // 階段2：用 24h/量/資金費率先粗篩出最值得細看的前 60 支
@@ -423,52 +417,69 @@ async function doScan(silent=false){
       return {c,s};
     }).sort((a,b)=>b.s-a.s).slice(0,60).map(x=>x.c);
 
-    // 階段3：對這 30 支並行抓 K線(RSI/5m/15m/量倍數) + OI 變化（分批避免一次太多）
-    if(!silent) btn.textContent='◌ 計算技術指標 + OI 異動...';
+    // 階段3：對 60 支並行抓 K線 + OI
+    showStatus('⚡ 計算技術指標 + OI 異動...');
     const enriched=[];
     const batchSize=8;
     for(let i=0;i<prelim.length;i+=batchSize){
       const batch=prelim.slice(i,i+batchSize);
       const results=await Promise.all(batch.map(async c=>{
-        // K線與 OI 同時抓，不互相等待
-        const [m,oiChg]=await Promise.all([
-          fetchKlineMetrics(c.pair),
-          fetchOIChange(c.pair)
-        ]);
+        const [m,oiChg]=await Promise.all([fetchKlineMetrics(c.pair),fetchOIChange(c.pair)]);
         return {...c, rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1, oiChg5m:oiChg, liqSpike:0};
       }));
       enriched.push(...results);
-      if(!silent) btn.textContent=`◌ 計算指標+OI ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`;
+      showStatus(`⚡ 計算指標+OI ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`);
     }
 
     MKT=enriched;
     SCREENED=screen(MKT);
     renderScan();
-    if(!silent){ btn.disabled=false;btn.textContent='🔍 重新掃描全市場'; }
+    showStatus(`⚡ 自動模式啟用 · 上次掃描 ${new Date().toLocaleTimeString('zh-TW',{hour12:false})}`);
   }catch(e){
     if(!silent){
       $('errBox').style.display='block';
-      $('errBox').textContent='掃描失敗：'+e.message+'（請確認 Proxy 網址正確、Worker 已部署）';
-      btn.disabled=false;btn.textContent='🔍 掃描全市場';
+      $('errBox').textContent='掃描失敗：'+e.message;
     }
   }
 }
 
 // ---------- analyze one coin with 9 agents ----------
 function buildAgents(){
-  $('agents').innerHTML=AGENTS.map(a=>`<div class="agent" id="ag-${a.id}">
-    <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div></div>
-    <div class="ag-verdict"><span class="thinking">分析中</span></div>
-    <div class="ag-reason"></div></div>`).join('');
+  $('agents').innerHTML=AGENTS.map(a=>`<div class="agent collapsed" id="ag-${a.id}" data-aid="${a.id}">
+    <div class="ag-header" style="cursor:pointer;user-select:none">
+      <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div>
+        <span class="ag-toggle" style="margin-left:auto;font-size:11px;color:var(--dimmer);font-family:'Chakra Petch',monospace">▼</span>
+      </div>
+      <div class="ag-verdict"><span class="thinking">分析中</span></div>
+    </div>
+    <div class="ag-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+      <div class="ag-reason" style="font-size:11px;color:var(--text);line-height:1.55;margin-bottom:6px"></div>
+      <div class="ag-evidence" style="font-size:10px;color:var(--dim);line-height:1.5"></div>
+    </div></div>`).join('');
+  // 點擊展開
+  document.querySelectorAll('.agent[data-aid] .ag-header').forEach(h=>{
+    h.addEventListener('click',()=>{
+      const card=h.closest('.agent');
+      const detail=card.querySelector('.ag-detail');
+      const tog=card.querySelector('.ag-toggle');
+      const open=detail.style.display!=='none';
+      detail.style.display=open?'none':'block';
+      tog.textContent=open?'▼':'▲';
+    });
+  });
 }
-function paint(id,v,conf,reason,changed){
+function paint(id,v,conf,reason,changed,evidence){
   const el=$('ag-'+id);el.className='agent '+v+(changed?' changed':'');
   el.querySelector('.ag-verdict').innerHTML=`<span class="vtag ${v}">${labelMap[v]}</span><span class="vconf">${conf}%</span>`+(changed?`<span class="flag">↻改</span>`:'');
-  el.querySelector('.ag-reason').textContent=reason;
+  el.querySelector('.ag-reason').textContent=reason||'—';
+  if(evidence){
+    el.querySelector('.ag-evidence').innerHTML=
+      `<div style="color:var(--dimmer);margin-bottom:3px">📊 使用的數據</div><div style="color:var(--dim);margin-bottom:6px">${evidence.data||'—'}</div>`+
+      `<div style="color:var(--dimmer);margin-bottom:3px">⚡ 觸發指標</div><div style="color:var(--dim)">${evidence.triggers||'—'}</div>`;
+  }
 }
 async function analyze(sym){
-  KEY=$('apiKey').value.trim();
-  if(!KEY){$('errBox').style.display='block';$('errBox').textContent='請先輸入 Groq API Key 才能啟動 AI 討論';return;}
+  if(!ACCESS_TOKEN){$('errBox').style.display='block';$('errBox').textContent='請先在最上方輸入存取密碼';$('accessToken').scrollIntoView({behavior:'smooth',block:'center'});return;}
   const c=MKT.find(x=>x.sym===sym);curCoin=c;
   document.querySelectorAll('.coin').forEach(e=>e.classList.toggle('selected',e.dataset.sym===sym));
   R1={};R2={};
@@ -483,12 +494,17 @@ async function analyze(sym){
     // Round 1
     for(const a of AGENTS){
       $('pbStatus').textContent=`第一輪 · ${a.name}`;
-      const sys=`你是加密分析師「${a.name}派」，個性${a.persona}，只看：${a.focus}。回JSON：{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句,25字內,從你專業角度"}`;
+      const sys=`你是加密分析師「${a.name}派」，個性${a.persona}，只看：${a.focus}。`+
+        `請從你的專業角度分析。回JSON：{"verdict":"buy/sell/hold","confidence":0-100,`+
+        `"reason":"繁中2-3句完整推理,從你專業角度切入",`+
+        `"dataUsed":"列出你具體用了哪些數據(如:RSI=28、5m漲跌+3.5%、量倍數2.3x...)",`+
+        `"triggers":"被哪些關鍵指標變化觸發了你的判斷(如:RSI跌破30=超賣,MACD將金叉)"}`;
       try{const r=pj(await groq(sys,`${sym} 數據：${dataStr}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
-        R1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—'};
-        paint(a.id,v,R1[a.id].confidence,R1[a.id].reason,false);
-      }catch(e){R1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paint(a.id,'hold',50,'(分析失敗)',false);}
+        R1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—',
+          dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
+        paint(a.id,v,R1[a.id].confidence,R1[a.id].reason,false,{data:R1[a.id].dataUsed,triggers:R1[a.id].triggers});
+      }catch(e){R1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paint(a.id,'hold',50,'(分析失敗)',false,null);}
       await sleep(200);
     }
     // Round 2
@@ -496,12 +512,16 @@ async function analyze(sym){
     const board=AGENTS.map(a=>`${a.name}:${labelMap[R1[a.id].verdict]}(${R1[a.id].confidence}%)-${R1[a.id].reason}`).join('\n');
     for(const a of AGENTS){
       $('pbStatus').textContent=`第二輪(看全場) · ${a.name}`;
-      const sys=`你是「${a.name}派」(${a.persona},看${a.focus})。看完全場9人意見後重新判斷:堅持或修正?回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句25字內,說明堅持或改變原因"}`;
+      const sys=`你是「${a.name}派」(${a.persona},看${a.focus})。看完全場9人意見後重新判斷:堅持或修正?`+
+        `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,`+
+        `"reason":"繁中2-3句:說明堅持或改變的完整理由,可點名回應其他流派",`+
+        `"dataUsed":"你重新權衡時用到的數據","triggers":"哪些觀點/指標讓你改變或更堅定"}`;
       try{const r=pj(await groq(sys,`${sym}數據:${dataStr}\n全場意見:\n${board}\n你原本:${labelMap[R1[a.id].verdict]}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:R1[a.id].verdict;
         const ch=v!==R1[a.id].verdict;
-        R2[a.id]={verdict:v,confidence:r.confidence||R1[a.id].confidence,reason:r.reason||'—',changed:ch};
-        paint(a.id,v,R2[a.id].confidence,R2[a.id].reason,ch);
+        R2[a.id]={verdict:v,confidence:r.confidence||R1[a.id].confidence,reason:r.reason||'—',changed:ch,
+          dataUsed:r.dataUsed||R1[a.id].dataUsed,triggers:r.triggers||R1[a.id].triggers};
+        paint(a.id,v,R2[a.id].confidence,R2[a.id].reason,ch,{data:R2[a.id].dataUsed,triggers:R2[a.id].triggers});
       }catch(e){R2[a.id]={...R1[a.id],changed:false};}
       await sleep(200);
     }
@@ -520,34 +540,48 @@ async function analyze(sym){
     $('vFinal').textContent=labelMap[v];$('vFinal').className='v-final mono '+v;
     $('vPos').textContent=r.position||'—';$('vConf').textContent=(r.confidence||'—')+'%';
     $('vTally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
-    $('vSum').innerHTML=renderPlan(r,c.price)+(r.summary||'—');
+    $('vSum').innerHTML=renderPlan(r,c.price,sym)+(r.summary||'—');
     $('pbStatus').textContent='✓ 完成';
-    // 存推薦到雲端（只存有方向的）
-    if(v!=='hold' && r.entry){
-      await saveRec({sym,verdict:v,entry:r.entry,stopLoss:r.stopLoss,takeProfit:r.takeProfit,rr:r.rr,
-        priceAtRec:c.price,confidence:r.confidence,time:Date.now()});
-      loadRecs();
-    }
   }catch(e){$('errBox').style.display='block';$('errBox').textContent=e.message;$('pbStatus').textContent='✗ 錯誤';}
 }
 
-// 把交易計畫渲染成 HTML 區塊
-function renderPlan(r,curPrice){
+// 把交易計畫渲染成 HTML 區塊（含「加入戰績」按鈕）
+let PENDING_RECS={}; // recId → 推薦資料（等待加入戰績）
+function renderPlan(r,curPrice,sym){
   if(!r.entry||r.verdict==='hold') return '';
   const dir=r.verdict==='buy'?'做多':'做空';
   const dirColor=r.verdict==='buy'?'var(--green)':'var(--red)';
   const slPct=r.stopLoss?((r.stopLoss-r.entry)/r.entry*100).toFixed(1):'—';
   const tpPct=r.takeProfit?((r.takeProfit-r.entry)/r.entry*100).toFixed(1):'—';
+  const recId='pr_'+sym+'_'+Date.now();
+  PENDING_RECS[recId]={sym,verdict:r.verdict,entry:r.entry,stopLoss:r.stopLoss,takeProfit:r.takeProfit,rr:r.rr,
+    priceAtRec:curPrice,confidence:r.confidence,time:Date.now()};
   return `<div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;font-family:'Chakra Petch',monospace">
-    <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px">
+    <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin-bottom:10px">
       <div><span style="color:var(--dimmer)">方向</span> <b style="color:${dirColor}">${dir}</b></div>
       <div><span style="color:var(--dimmer)">進場</span> <b>$${r.entry}</b></div>
       <div><span style="color:var(--dimmer)">止損</span> <b style="color:var(--red)">$${r.stopLoss} (${slPct>0?'+':''}${slPct}%)</b></div>
       <div><span style="color:var(--dimmer)">止盈</span> <b style="color:var(--green)">$${r.takeProfit} (${tpPct>0?'+':''}${tpPct}%)</b></div>
       <div><span style="color:var(--dimmer)">盈虧比</span> <b style="color:var(--cyan)">${r.rr||'—'}</b></div>
     </div>
+    <button class="btn add-rec-btn" data-rec-id="${recId}" style="padding:8px 16px;font-size:12px">＋ 加入戰績追蹤</button>
   </div>`;
 }
+
+// 委派事件：點「加入戰績」
+document.addEventListener('click',async(e)=>{
+  if(e.target.classList.contains('add-rec-btn')){
+    const id=e.target.getAttribute('data-rec-id');
+    const rec=PENDING_RECS[id];
+    if(!rec) return;
+    e.target.disabled=true;e.target.textContent='儲存中...';
+    await saveRec(rec);
+    await loadRecs();
+    e.target.textContent='✓ 已加入';
+    e.target.style.background='var(--green)';e.target.style.color='#04140f';
+    delete PENDING_RECS[id];
+  }
+});
 
 // ---------- Top 3 評選 ----------
 let RANKING=[];
@@ -570,9 +604,8 @@ async function rankTop3(){
     $('errBox').scrollIntoView({behavior:'smooth',block:'center'});return;
   }
   const pool=candidatePool();
-  if(pool.length<3){$('errBox').style.display='block';$('errBox').textContent=`候選池只有 ${pool.length} 支（需至少 3 支）。請再按一次掃描，或放寬篩選條件`;return;}
-  KEY=$('apiKey').value.trim();
-  if(!KEY){$('errBox').style.display='block';$('errBox').textContent='請先在最上方輸入 Groq API Key 才能評選';$('apiKey').scrollIntoView({behavior:'smooth',block:'center'});return;}
+  if(pool.length<3){$('errBox').style.display='block';$('errBox').textContent=`候選池只有 ${pool.length} 支（需至少 3 支）`;return;}
+  if(!ACCESS_TOKEN){$('errBox').style.display='block';$('errBox').textContent='請先在最上方輸入存取密碼';$('accessToken').scrollIntoView({behavior:'smooth',block:'center'});return;}
   $('errBox').style.display='none';
   const btn=$('rankBtn');btn.disabled=true;btn.textContent='◌ 評選中...';
   $('rankArea').classList.remove('hidden');
@@ -709,37 +742,60 @@ async function deepDiveCard(sym,medal,host){
   host.appendChild(card);
   const status=card.querySelector('.dd-status');
   const agentsBox=card.querySelector('.dd-agents');
-  agentsBox.innerHTML=AGENTS.map(a=>`<div class="agent" data-aid="${a.id}">
-    <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div></div>
-    <div class="ag-verdict"><span class="thinking">分析中</span></div><div class="ag-reason"></div></div>`).join('');
-  const paintLocal=(id,v,conf,reason,changed)=>{
+  agentsBox.innerHTML=AGENTS.map(a=>`<div class="agent collapsed" data-aid="${a.id}">
+    <div class="ag-header" style="cursor:pointer;user-select:none">
+      <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div>
+        <span class="ag-toggle" style="margin-left:auto;font-size:11px;color:var(--dimmer);font-family:'Chakra Petch',monospace">▼</span>
+      </div>
+      <div class="ag-verdict"><span class="thinking">分析中</span></div>
+    </div>
+    <div class="ag-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+      <div class="ag-reason" style="font-size:11px;color:var(--text);line-height:1.55;margin-bottom:6px"></div>
+      <div class="ag-evidence" style="font-size:10px;color:var(--dim);line-height:1.5"></div>
+    </div></div>`).join('');
+  // 點擊展開
+  agentsBox.querySelectorAll('.ag-header').forEach(h=>{
+    h.addEventListener('click',()=>{
+      const cd=h.closest('.agent'); const d=cd.querySelector('.ag-detail'); const t=cd.querySelector('.ag-toggle');
+      const open=d.style.display!=='none'; d.style.display=open?'none':'block'; t.textContent=open?'▼':'▲';
+    });
+  });
+  const paintLocal=(id,v,conf,reason,changed,ev)=>{
     const el=agentsBox.querySelector(`[data-aid="${id}"]`);
     el.className='agent '+v+(changed?' changed':'');
     el.querySelector('.ag-verdict').innerHTML=`<span class="vtag ${v}">${labelMap[v]}</span><span class="vconf">${conf}%</span>`+(changed?`<span class="flag">↻改</span>`:'');
-    el.querySelector('.ag-reason').textContent=reason;
+    el.querySelector('.ag-reason').textContent=reason||'—';
+    if(ev) el.querySelector('.ag-evidence').innerHTML=
+      `<div style="color:var(--dimmer);margin-bottom:3px">📊 使用的數據</div><div style="margin-bottom:6px">${ev.data||'—'}</div>`+
+      `<div style="color:var(--dimmer);margin-bottom:3px">⚡ 觸發指標</div><div>${ev.triggers||'—'}</div>`;
   };
   const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, OI 5分鐘變化${c.oiChg5m}%, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
   const r1={},r2={};
   try{
     for(const a of AGENTS){
       status.textContent=`第一輪 · ${a.name}`;
-      const sys=`你是加密分析師「${a.name}派」，個性${a.persona}，只看：${a.focus}。回JSON：{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句,25字內"}`;
+      const sys=`你是加密分析師「${a.name}派」，個性${a.persona}，只看：${a.focus}。`+
+        `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整推理",`+
+        `"dataUsed":"列出具體用的數據(如RSI=28、5m+3.5%、量2.3x)","triggers":"被哪些關鍵指標變化觸發判斷"}`;
       try{const r=pj(await groq(sys,`${sym} 數據：${dataStr}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
-        r1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—'};
-        paintLocal(a.id,v,r1[a.id].confidence,r1[a.id].reason,false);
-      }catch(e){r1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paintLocal(a.id,'hold',50,'(分析失敗)',false);}
+        r1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—',dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
+        paintLocal(a.id,v,r1[a.id].confidence,r1[a.id].reason,false,{data:r1[a.id].dataUsed,triggers:r1[a.id].triggers});
+      }catch(e){r1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paintLocal(a.id,'hold',50,'(分析失敗)',false,null);}
       await sleep(160);
     }
     const board=AGENTS.map(a=>`${a.name}:${labelMap[r1[a.id].verdict]}(${r1[a.id].confidence}%)-${r1[a.id].reason}`).join('\n');
     for(const a of AGENTS){
       status.textContent=`第二輪 · ${a.name}`;
-      const sys=`你是「${a.name}派」(${a.persona},看${a.focus})。看完全場9人意見後重新判斷:堅持或修正?回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句25字內"}`;
+      const sys=`你是「${a.name}派」(${a.persona},看${a.focus})。看完全場9人意見後重新判斷:堅持或修正?`+
+        `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整理由",`+
+        `"dataUsed":"重新權衡用到的數據","triggers":"哪些觀點或指標讓你改變/更堅定"}`;
       try{const r=pj(await groq(sys,`${sym}數據:${dataStr}\n全場:\n${board}\n你原本:${labelMap[r1[a.id].verdict]}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:r1[a.id].verdict;
         const ch=v!==r1[a.id].verdict;
-        r2[a.id]={verdict:v,confidence:r.confidence||r1[a.id].confidence,reason:r.reason||'—',changed:ch};
-        paintLocal(a.id,v,r2[a.id].confidence,r2[a.id].reason,ch);
+        r2[a.id]={verdict:v,confidence:r.confidence||r1[a.id].confidence,reason:r.reason||'—',changed:ch,
+          dataUsed:r.dataUsed||r1[a.id].dataUsed,triggers:r.triggers||r1[a.id].triggers};
+        paintLocal(a.id,v,r2[a.id].confidence,r2[a.id].reason,ch,{data:r2[a.id].dataUsed,triggers:r2[a.id].triggers});
       }catch(e){r2[a.id]={...r1[a.id],changed:false};}
       await sleep(160);
     }
@@ -758,25 +814,22 @@ async function deepDiveCard(sym,medal,host){
     card.querySelector('.dd-pos').textContent=r.position||'—';
     card.querySelector('.dd-conf').textContent=(r.confidence||'—')+'%';
     card.querySelector('.dd-tally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
-    card.querySelector('.dd-sum').innerHTML=renderPlan(r,c.price)+(r.summary||'—');
+    card.querySelector('.dd-sum').innerHTML=renderPlan(r,c.price,sym)+(r.summary||'—');
     status.textContent='✓ 完成';
-    if(v!=='hold' && r.entry){
-      await saveRec({sym,verdict:v,entry:r.entry,stopLoss:r.stopLoss,takeProfit:r.takeProfit,rr:r.rr,
-        priceAtRec:c.price,confidence:r.confidence,time:Date.now()});
-      loadRecs();
-    }
   }catch(e){status.textContent='✗ 錯誤: '+e.message;}
 }
 
 $('rankBtn').addEventListener('click',rankTop3);
-$('scanBtn').addEventListener('click',()=>doScan(false));
 
 // ---------- 推薦記錄（雲端 KV）----------
 let RECS=[];
 async function saveRec(rec){
+  if(!ACCESS_TOKEN) return;
   try{
     await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=saveRec',{
-      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rec)
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Access-Token':ACCESS_TOKEN},
+      body:JSON.stringify(rec)
     });
   }catch(e){ console.warn('存推薦失敗',e); }
 }
@@ -789,9 +842,12 @@ async function loadRecs(){
   }catch(e){ /* 靜默 */ }
 }
 async function clearRecs(){
+  if(!ACCESS_TOKEN){alert('請先設定存取密碼');return;}
   if(!confirm('確定清空所有推薦記錄？此動作無法復原。')) return;
   try{
-    await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=clearRecs');
+    await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=clearRecs',{
+      headers:{'X-Access-Token':ACCESS_TOKEN}
+    });
     RECS=[];renderRecs();
   }catch(e){}
 }
@@ -855,28 +911,24 @@ loadRecs();
 $('recsRefresh').addEventListener('click',loadRecs);
 $('recsClear').addEventListener('click',clearRecs);
 
-// Proxy 設定
-$('cfgBtn').addEventListener('click',()=>{
-  $('cfgBox').classList.toggle('hidden');
-  $('proxyInput').value=PROXY_URL;
+// 存取密碼
+$('accessToken').value=ACCESS_TOKEN;
+$('tokenSave').addEventListener('click',()=>{
+  ACCESS_TOKEN=$('accessToken').value.trim();
+  try{ localStorage.setItem('accessToken',ACCESS_TOKEN); }catch(e){}
+  flash(ACCESS_TOKEN?'✓ 密碼已儲存':'⚠ 密碼已清空','ok');
+  if(ACCESS_TOKEN) loadRecs();
 });
-$('proxySave').addEventListener('click',()=>{
-  PROXY_URL=$('proxyInput').value.trim();
-  try{ localStorage.setItem('proxyUrl',PROXY_URL); }catch(e){}
-  $('cfgBox').classList.add('hidden');
-  $('errBox').style.display='block';
-  $('errBox').style.background='rgba(43,217,122,.1)';$('errBox').style.borderColor='var(--green)';$('errBox').style.color='var(--green)';
-  $('errBox').textContent='✓ Proxy 網址已儲存，可以開始掃描了';
-  setTimeout(()=>{$('errBox').style.display='none';$('errBox').style.background='';$('errBox').style.borderColor='';$('errBox').style.color='';},2500);
-});
-// 啟動時若沒設定 proxy，自動打開設定區（已有預設網址則不彈出）
-if(!PROXY_URL){ $('cfgBox').classList.remove('hidden'); }
+function flash(msg,type){
+  const e=$('errBox');e.style.display='block';e.textContent=msg;
+  if(type==='ok'){e.style.background='rgba(43,217,122,.1)';e.style.borderColor='var(--green)';e.style.color='var(--green)';}
+  else{e.style.background='';e.style.borderColor='';e.style.color='';}
+  setTimeout(()=>{e.style.display='none';e.style.background='';e.style.borderColor='';e.style.color='';},2500);
+}
 
 // ---------- 即時更新 ----------
 let priceTimer=null, rescanTimer=null, liveOn=false;
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
-const PRICE_INTERVAL=5000;    // 價格每 5 秒
-const RESCAN_INTERVAL=60000;  // 篩選清單每 60 秒完整重排
 
 // 輕量：只更新已顯示幣的價格與漲跌
 async function tickPrices(){
@@ -922,23 +974,32 @@ async function tickRescan(){
   await doScan(true); // true = 靜默模式，不改按鈕文字
 }
 
+const PRICE_INTERVAL=5000;      // 價格每 5 秒（輕量）
+const RESCAN_INTERVAL=60000;    // 完整掃描每 60 秒
+
 function startLive(){
   liveOn=true;
+  $('autoToggle').textContent='⏸ 暫停自動';
+  $('autoToggle').classList.add('ghost');
   $('liveStatus').style.display='inline-flex';
-  $('liveToggle').textContent='⏸ 暫停即時';
+  // 立刻掃一次
+  doScan(true).catch(()=>{});
   tickPrices();
   priceTimer=setInterval(tickPrices,PRICE_INTERVAL);
   rescanTimer=setInterval(tickRescan,RESCAN_INTERVAL);
+  $('scanStatus').textContent='⚡ 自動模式啟用：每 5 秒更新價格，每 60 秒完整重掃';
 }
 function stopLive(){
   liveOn=false;
+  $('autoToggle').textContent='▶ 開啟自動掃描';
+  $('autoToggle').classList.remove('ghost');
   $('liveStatus').style.display='none';
-  $('liveToggle').textContent='▶ 開啟即時';
   clearInterval(priceTimer);clearInterval(rescanTimer);
+  $('scanStatus').textContent='';
 }
-$('liveToggle').addEventListener('click',()=>{ liveOn?stopLive():startLive(); });
+$('autoToggle').addEventListener('click',()=>{ liveOn?stopLive():startLive(); });
 
-// 分頁切回前景時，若即時開著，立刻更新一次
+// 分頁切回前景時，若自動開著，立刻更新一次
 document.addEventListener('visibilitychange',()=>{
   if(!document.hidden && liveOn) tickPrices();
 });
