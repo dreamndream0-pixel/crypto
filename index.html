@@ -184,15 +184,15 @@
   </div>
 
   <div class="disclaimer">
-    ⚠️ 市場數據來自幣安合約即時 API（經 Cloudflare Worker 轉發）。技術指標 RSI、短期變化由 K 線即時計算。<br>
-    OI 異動與清算數據此版尚未納入（顯示為基準值）。AI 分析會出錯，加密貨幣風險極高，僅供研究參考，絕非投資建議或自動交易指令。
+    ⚠️ 市場數據來自幣安合約即時 API（經 Cloudflare Worker 轉發）。RSI、短期變化、OI 5分鐘異動皆由幣安即時計算。<br>
+    清算數據此版尚未納入（需 WebSocket）。AI 分析會出錯，加密貨幣風險極高，僅供研究參考，絕非投資建議或自動交易指令。
   </div>
 </div>
 
 <script>
 // ---------- 幣安 Proxy 設定 ----------
 // 部署 binance-proxy-worker.js 到 Cloudflare 後，把你的 Worker 網址貼在這裡
-let PROXY_URL = localStorage.getItem('proxyUrl') || '';
+let PROXY_URL = localStorage.getItem('proxyUrl') || 'https://binance-proxy.dreamndream0.workers.dev';
 
 const MAJORS=['BTC','ETH','SOL','XRP','BCH','AVAX','LINK','DOGE','APT','SUI','NEAR','BNB','ADA','TRX','TON','DOT','MATIC','LTC'];
 
@@ -238,6 +238,15 @@ function calcRSI(closes,period=14){
   if(avgL===0) return 100;
   const rs=avgG/avgL;
   return Math.round(100-100/(1+rs));
+}
+
+// 抓單一幣的 OI 5分鐘變化%
+async function fetchOIChange(pair){
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=oichange&symbol=${pair}`);
+    const d=await res.json();
+    return (typeof d.oiChange5m==='number')?d.oiChange5m:0;
+  }catch(e){ return 0; }
 }
 // ---------- 篩選 + 警報引擎（真實邏輯，純計算，不花 AI）----------
 // 多條件警報：四個偵測器，至少2個同時觸發才警報
@@ -382,25 +391,29 @@ async function doScan(){
     // 標註大幣
     market=market.map(c=>({...c,isMajor:MAJORS.includes(c.symbol),sym:c.symbol}));
 
-    // 階段2：用 24h/量/資金費率先粗篩出最值得細看的前 30 支
+    // 階段2：用 24h/量/資金費率先粗篩出最值得細看的前 60 支
     const prelim=market.map(c=>{
       const volScore=Math.min(1,c.volUSDT/1e9);
       const s=Math.abs(c.chg24)*1.0 + volScore*25 + Math.abs(c.funding)*40;
       return {c,s};
-    }).sort((a,b)=>b.s-a.s).slice(0,30).map(x=>x.c);
+    }).sort((a,b)=>b.s-a.s).slice(0,60).map(x=>x.c);
 
-    // 階段3：對這 30 支並行抓 K線補 RSI/5m/15m/量倍數（分批避免一次太多）
-    btn.textContent='◌ 計算技術指標 (RSI/短期變化)...';
+    // 階段3：對這 30 支並行抓 K線(RSI/5m/15m/量倍數) + OI 變化（分批避免一次太多）
+    btn.textContent='◌ 計算技術指標 + OI 異動...';
     const enriched=[];
-    const batchSize=6;
+    const batchSize=8;
     for(let i=0;i<prelim.length;i+=batchSize){
       const batch=prelim.slice(i,i+batchSize);
       const results=await Promise.all(batch.map(async c=>{
-        const m=await fetchKlineMetrics(c.pair);
-        return {...c, rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1, oiChg5m:0, liqSpike:0};
+        // K線與 OI 同時抓，不互相等待
+        const [m,oiChg]=await Promise.all([
+          fetchKlineMetrics(c.pair),
+          fetchOIChange(c.pair)
+        ]);
+        return {...c, rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1, oiChg5m:oiChg, liqSpike:0};
       }));
       enriched.push(...results);
-      btn.textContent=`◌ 計算技術指標 ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`;
+      btn.textContent=`◌ 計算指標+OI ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`;
     }
 
     MKT=enriched;
@@ -438,7 +451,7 @@ async function analyze(sym){
   $('verdict').classList.add('hidden');
   buildAgents();
   $('analysisArea').scrollIntoView({behavior:'smooth',block:'start'});
-  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
+  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, OI 5分鐘變化${c.oiChg5m}%, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
   try{
     // Round 1
     for(const a of AGENTS){
@@ -650,7 +663,7 @@ async function deepDiveCard(sym,medal,host){
     el.querySelector('.ag-verdict').innerHTML=`<span class="vtag ${v}">${labelMap[v]}</span><span class="vconf">${conf}%</span>`+(changed?`<span class="flag">↻改</span>`:'');
     el.querySelector('.ag-reason').textContent=reason;
   };
-  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
+  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, OI 5分鐘變化${c.oiChg5m}%, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
   const r1={},r2={};
   try{
     for(const a of AGENTS){
@@ -708,7 +721,7 @@ $('proxySave').addEventListener('click',()=>{
   $('errBox').textContent='✓ Proxy 網址已儲存，可以開始掃描了';
   setTimeout(()=>{$('errBox').style.display='none';$('errBox').style.background='';$('errBox').style.borderColor='';$('errBox').style.color='';},2500);
 });
-// 啟動時若沒設定 proxy，自動打開設定區
+// 啟動時若沒設定 proxy，自動打開設定區（已有預設網址則不彈出）
 if(!PROXY_URL){ $('cfgBox').classList.remove('hidden'); }
 </script>
 </body>
