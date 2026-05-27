@@ -195,9 +195,21 @@
     </div>
   </div>
 
+  <div id="recsArea">
+    <div class="stage-label" style="display:flex;align-items:center;gap:12px">
+      <span>📋 推薦戰績追蹤</span>
+      <span id="recsStat" style="font-size:11px;color:var(--cyan);font-family:'Chakra Petch',monospace"></span>
+      <button id="recsRefresh" class="btn ghost" style="margin-left:auto;padding:5px 12px;font-size:11px">↻ 更新</button>
+      <button id="recsClear" class="btn ghost" style="padding:5px 12px;font-size:11px">清空</button>
+    </div>
+    <div class="panel-box">
+      <div id="recsBody"></div>
+    </div>
+  </div>
+
   <div class="disclaimer">
     ⚠️ 市場數據來自幣安合約即時 API（經 Cloudflare Worker 轉發）。RSI、短期變化、OI 5分鐘異動皆由幣安即時計算。<br>
-    清算數據此版尚未納入（需 WebSocket）。AI 分析會出錯，加密貨幣風險極高，僅供研究參考，絕非投資建議或自動交易指令。
+    止盈損點位由 AI 依技術位判斷並確保盈虧比，戰績追蹤以即時價對比進場價計算。AI 分析會出錯，加密貨幣風險極高，僅供研究參考，絕非投資建議或自動交易指令。
   </div>
 </div>
 
@@ -497,16 +509,44 @@ async function analyze(sym){
     $('pbStatus').textContent='總指揮裁決中...';
     const cnt={buy:0,sell:0,hold:0};AGENTS.forEach(a=>cnt[R2[a.id].verdict]++);
     const board2=AGENTS.map(a=>`${a.name}:${labelMap[R2[a.id].verdict]}(${R2[a.id].confidence}%)-${R2[a.id].reason}`).join('\n');
-    const sys=`你是分析師軍團總指揮(資深基金經理)。綜合9位討論後意見做裁決。回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,"summary":"繁中3-4句:如何權衡各方、為何這樣判、風險提示"}`;
-    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n討論後意見:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
+    const sys=`你是分析師軍團總指揮(資深基金經理)。綜合9位討論後意見做裁決,並給出完整交易計畫。`+
+      `若方向是buy/sell,必須依技術位(支撐壓力)給進場價、止損、止盈,並確保盈虧比至少1:1.5(否則改觀望)。`+
+      `回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,`+
+      `"entry":進場價數字,"stopLoss":止損價數字,"takeProfit":止盈價數字,"rr":"盈虧比如1:2.3",`+
+      `"summary":"繁中3-4句:權衡、理由、風險提示"}。若觀望則entry/stopLoss/takeProfit填null。`;
+    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n現價:${c.price}\n討論後意見:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
     const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
     $('verdict').classList.remove('hidden');
     $('vFinal').textContent=labelMap[v];$('vFinal').className='v-final mono '+v;
     $('vPos').textContent=r.position||'—';$('vConf').textContent=(r.confidence||'—')+'%';
     $('vTally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
-    $('vSum').innerHTML=r.summary||'—';
+    $('vSum').innerHTML=renderPlan(r,c.price)+(r.summary||'—');
     $('pbStatus').textContent='✓ 完成';
+    // 存推薦到雲端（只存有方向的）
+    if(v!=='hold' && r.entry){
+      await saveRec({sym,verdict:v,entry:r.entry,stopLoss:r.stopLoss,takeProfit:r.takeProfit,rr:r.rr,
+        priceAtRec:c.price,confidence:r.confidence,time:Date.now()});
+      loadRecs();
+    }
   }catch(e){$('errBox').style.display='block';$('errBox').textContent=e.message;$('pbStatus').textContent='✗ 錯誤';}
+}
+
+// 把交易計畫渲染成 HTML 區塊
+function renderPlan(r,curPrice){
+  if(!r.entry||r.verdict==='hold') return '';
+  const dir=r.verdict==='buy'?'做多':'做空';
+  const dirColor=r.verdict==='buy'?'var(--green)':'var(--red)';
+  const slPct=r.stopLoss?((r.stopLoss-r.entry)/r.entry*100).toFixed(1):'—';
+  const tpPct=r.takeProfit?((r.takeProfit-r.entry)/r.entry*100).toFixed(1):'—';
+  return `<div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;font-family:'Chakra Petch',monospace">
+    <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px">
+      <div><span style="color:var(--dimmer)">方向</span> <b style="color:${dirColor}">${dir}</b></div>
+      <div><span style="color:var(--dimmer)">進場</span> <b>$${r.entry}</b></div>
+      <div><span style="color:var(--dimmer)">止損</span> <b style="color:var(--red)">$${r.stopLoss} (${slPct>0?'+':''}${slPct}%)</b></div>
+      <div><span style="color:var(--dimmer)">止盈</span> <b style="color:var(--green)">$${r.takeProfit} (${tpPct>0?'+':''}${tpPct}%)</b></div>
+      <div><span style="color:var(--dimmer)">盈虧比</span> <b style="color:var(--cyan)">${r.rr||'—'}</b></div>
+    </div>
+  </div>`;
 }
 
 // ---------- Top 3 評選 ----------
@@ -706,21 +746,114 @@ async function deepDiveCard(sym,medal,host){
     status.textContent='總指揮裁決中...';
     const cnt={buy:0,sell:0,hold:0};AGENTS.forEach(a=>cnt[r2[a.id].verdict]++);
     const board2=AGENTS.map(a=>`${a.name}:${labelMap[r2[a.id].verdict]}(${r2[a.id].confidence}%)-${r2[a.id].reason}`).join('\n');
-    const sys=`你是總指揮。綜合9位討論後意見做裁決。回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,"summary":"繁中3-4句:權衡、理由、風險"}`;
-    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n討論後:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
+    const sys=`你是總指揮。綜合9位討論後意見做裁決,並給出完整交易計畫。`+
+      `若buy/sell必須依技術位給進場價、止損、止盈,確保盈虧比至少1:1.5(否則改觀望)。`+
+      `回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,`+
+      `"entry":進場價數字,"stopLoss":止損價數字,"takeProfit":止盈價數字,"rr":"盈虧比如1:2.3",`+
+      `"summary":"繁中3-4句:權衡、理由、風險"}。觀望則entry等填null。`;
+    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n現價:${c.price}\n討論後:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
     const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
     const vc=card.querySelector('.dd-verdict');vc.classList.remove('hidden');
     const vf=card.querySelector('.dd-final');vf.textContent=labelMap[v];vf.className='v-final mono dd-final '+v;
     card.querySelector('.dd-pos').textContent=r.position||'—';
     card.querySelector('.dd-conf').textContent=(r.confidence||'—')+'%';
     card.querySelector('.dd-tally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
-    card.querySelector('.dd-sum').innerHTML=r.summary||'—';
+    card.querySelector('.dd-sum').innerHTML=renderPlan(r,c.price)+(r.summary||'—');
     status.textContent='✓ 完成';
+    if(v!=='hold' && r.entry){
+      await saveRec({sym,verdict:v,entry:r.entry,stopLoss:r.stopLoss,takeProfit:r.takeProfit,rr:r.rr,
+        priceAtRec:c.price,confidence:r.confidence,time:Date.now()});
+      loadRecs();
+    }
   }catch(e){status.textContent='✗ 錯誤: '+e.message;}
 }
 
 $('rankBtn').addEventListener('click',rankTop3);
 $('scanBtn').addEventListener('click',()=>doScan(false));
+
+// ---------- 推薦記錄（雲端 KV）----------
+let RECS=[];
+async function saveRec(rec){
+  try{
+    await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=saveRec',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rec)
+    });
+  }catch(e){ console.warn('存推薦失敗',e); }
+}
+async function loadRecs(){
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=getRecs');
+    const d=await res.json();
+    RECS=d.recs||[];
+    renderRecs();
+  }catch(e){ /* 靜默 */ }
+}
+async function clearRecs(){
+  if(!confirm('確定清空所有推薦記錄？此動作無法復原。')) return;
+  try{
+    await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=clearRecs');
+    RECS=[];renderRecs();
+  }catch(e){}
+}
+
+// 計算每筆推薦的當下表現
+function recStatus(rec,curPrice){
+  if(!curPrice||!rec.entry) return {pct:null,state:'—',color:'var(--dim)'};
+  const isLong=rec.verdict==='buy';
+  // 漲幅（做多用正向，做空反向）
+  const rawPct=(curPrice-rec.entry)/rec.entry*100;
+  const pct=isLong?rawPct:-rawPct;
+  // 判斷止盈/止損
+  let state='進行中',color='var(--cyan)';
+  if(rec.takeProfit&&rec.stopLoss){
+    if(isLong){
+      if(curPrice>=rec.takeProfit){state='已止盈';color='var(--green)';}
+      else if(curPrice<=rec.stopLoss){state='已止損';color='var(--red)';}
+    }else{
+      if(curPrice<=rec.takeProfit){state='已止盈';color='var(--green)';}
+      else if(curPrice>=rec.stopLoss){state='已止損';color='var(--red)';}
+    }
+  }
+  return {pct:+pct.toFixed(2),state,color};
+}
+
+function renderRecs(){
+  const box=$('recsBody');
+  if(!box) return;
+  if(RECS.length===0){ box.innerHTML='<div style="padding:18px;text-align:center;color:var(--dimmer);font-size:12px">尚無推薦記錄。點幣討論或評選 Top 3，有方向的裁決會自動記錄在這裡。</div>'; return; }
+  // 用目前 MKT 的最新價算表現
+  const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c.price);
+  let wins=0,total=0;
+  const rows=RECS.map(rec=>{
+    const cur=priceMap[rec.sym];
+    const st=recStatus(rec,cur);
+    if(st.state==='已止盈'){wins++;total++;}
+    else if(st.state==='已止損'){total++;}
+    const dir=rec.verdict==='buy'?'多':'空';
+    const dirColor=rec.verdict==='buy'?'var(--green)':'var(--red)';
+    const t=new Date(rec.time).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+    return `<tr style="border-top:1px solid var(--line)">
+      <td style="padding:8px 10px;font-weight:700">${rec.sym} <span style="color:${dirColor};font-size:10px">${dir}</span></td>
+      <td style="padding:8px 10px;text-align:right">$${rec.entry}</td>
+      <td style="padding:8px 10px;text-align:right;color:var(--dim)">${cur?'$'+cur:'—'}</td>
+      <td style="padding:8px 10px;text-align:right;color:${st.pct>=0?'var(--green)':'var(--red)'};font-weight:700">${st.pct!==null?(st.pct>0?'+':'')+st.pct+'%':'—'}</td>
+      <td style="padding:8px 10px;text-align:center;color:${st.color};font-size:11px">${st.state}</td>
+      <td style="padding:8px 10px;text-align:right;color:var(--dimmer);font-size:10px">${t}</td>
+    </tr>`;
+  }).join('');
+  const winRate=total>0?Math.round(wins/total*100):'—';
+  $('recsStat').textContent=`已結算 ${total} 筆 · 勝率 ${winRate}${total>0?'%':''}`;
+  box.innerHTML=`<table style="width:100%;border-collapse:collapse;font-family:'Chakra Petch',monospace;font-size:12px">
+    <tr style="color:var(--dimmer);font-size:10px">
+      <td style="padding:6px 10px">幣/方向</td><td style="padding:6px 10px;text-align:right">進場</td>
+      <td style="padding:6px 10px;text-align:right">現價</td><td style="padding:6px 10px;text-align:right">損益</td>
+      <td style="padding:6px 10px;text-align:center">狀態</td><td style="padding:6px 10px;text-align:right">時間</td>
+    </tr>${rows}</table>`;
+}
+// 啟動時載入一次記錄
+loadRecs();
+$('recsRefresh').addEventListener('click',loadRecs);
+$('recsClear').addEventListener('click',clearRecs);
 
 // Proxy 設定
 $('cfgBtn').addEventListener('click',()=>{
@@ -776,6 +909,9 @@ async function tickPrices(){
       el.setAttribute('data-chg-sym',sym);
     });
     $('liveText').textContent='即時更新中 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+    // 用最新價更新 MKT 價格，順便刷新戰績損益
+    market.forEach(c=>{ const idx=MKT.findIndex(x=>x.sym===c.symbol); if(idx>=0) MKT[idx].price=c.price; });
+    if(RECS.length>0) renderRecs();
   }catch(e){ /* 靜默，下次再試 */ }
 }
 
