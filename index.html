@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分析師軍團 · 全市場掃描 + 討論</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+  :root{
+    --bg:#06080d;--panel:#0d1119;--panel-2:#11151f;--line:#1c2230;
+    --green:#2bd97a;--red:#ff4d5e;--amber:#ffb627;--cyan:#36e2e2;
+    --text:#e6ebf2;--dim:#8a93a6;--dimmer:#525c6e;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--text);font-family:'Noto Sans TC',sans-serif;min-height:100vh;
+    background-image:radial-gradient(circle at 12% 18%,rgba(54,226,226,.06),transparent 40%),radial-gradient(circle at 88% 82%,rgba(43,217,122,.05),transparent 42%);}
+  .mono{font-family:'Chakra Petch',monospace;}
+  header{border-bottom:1px solid var(--line);padding:14px 22px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;background:rgba(6,8,13,.88);backdrop-filter:blur(12px);}
+  .brand{display:flex;align-items:center;gap:11px;}
+  .logo{width:31px;height:31px;border-radius:8px;background:linear-gradient(135deg,var(--cyan),var(--green));display:grid;place-items:center;font-weight:900;color:#04140f;font-size:16px;box-shadow:0 0 22px rgba(54,226,226,.35);}
+  .brand h1{font-size:15px;font-weight:700;}
+  .brand .sub{font-size:9px;color:var(--dim);letter-spacing:2px;}
+  .wrap{max-width:1140px;margin:0 auto;padding:22px;}
+
+  .bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:20px;}
+  .key-input{flex:1;min-width:200px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:10px 13px;border-radius:9px;font-size:12px;font-family:'Chakra Petch',monospace;}
+  .key-input:focus{outline:none;border-color:var(--cyan);}
+  .btn{font-family:'Chakra Petch',monospace;background:linear-gradient(135deg,var(--cyan),var(--green));color:#04140f;border:none;padding:11px 20px;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:1px;transition:transform .15s,box-shadow .2s;box-shadow:0 0 20px rgba(43,217,122,.25);white-space:nowrap;}
+  .btn:hover{transform:translateY(-2px);box-shadow:0 0 30px rgba(43,217,122,.45);}
+  .btn:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none;}
+  .btn.ghost{background:var(--panel-2);color:var(--text);border:1px solid var(--line);box-shadow:none;}
+
+  .stage-label{font-size:11px;letter-spacing:3px;color:var(--dimmer);text-transform:uppercase;margin:24px 0 13px;display:flex;align-items:center;gap:12px;font-family:'Chakra Petch',monospace;}
+  .stage-label::after{content:"";flex:1;height:1px;background:var(--line);}
+
+  /* scan columns */
+  .scan{display:grid;grid-template-columns:1fr 1fr 1fr;gap:13px;}
+  @media(max-width:820px){.scan{grid-template-columns:1fr;}}
+  .col{background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;}
+  .col-head{padding:11px 15px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);}
+  .col-head .cnt{margin-left:auto;font-family:'Chakra Petch',monospace;font-size:11px;color:var(--dim);}
+  .col.long .col-head{color:var(--green);}
+  .col.short .col-head{color:var(--red);}
+  .col.alert .col-head{color:var(--amber);}
+
+  .coin{padding:11px 15px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .15s;display:flex;flex-direction:column;gap:5px;}
+  .coin:last-child{border-bottom:none;}
+  .coin:hover{background:var(--panel-2);}
+  .coin.selected{background:rgba(54,226,226,.08);box-shadow:inset 3px 0 0 var(--cyan);}
+  .coin-top{display:flex;align-items:center;gap:8px;}
+  .coin-sym{font-family:'Chakra Petch',monospace;font-weight:700;font-size:14px;}
+  .coin-price{font-family:'Chakra Petch',monospace;font-size:12px;color:var(--dim);margin-left:auto;}
+  .coin-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .chip{font-family:'Chakra Petch',monospace;font-size:10px;padding:2px 7px;border-radius:5px;background:var(--panel-2);border:1px solid var(--line);color:var(--dim);}
+  .chg-up{color:var(--green);}.chg-dn{color:var(--red);}
+  .strength{height:5px;flex:1;min-width:50px;background:var(--panel-2);border-radius:3px;overflow:hidden;}
+  .strength-fill{height:100%;border-radius:3px;}
+  .long .strength-fill{background:var(--green);}.short .strength-fill{background:var(--red);}.alert .strength-fill{background:var(--amber);}
+  .ai-badge{font-size:9px;color:var(--cyan);font-family:'Chakra Petch',monospace;}
+
+  .hint{font-size:11px;color:var(--dimmer);text-align:center;margin-top:10px;}
+
+  /* analysis panel */
+  .panel-box{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:4px;}
+  .pb-head{padding:13px 18px;border-bottom:1px solid var(--line);background:var(--panel-2);display:flex;align-items:center;gap:10px;}
+  .pb-title{font-family:'Chakra Petch',monospace;font-weight:700;font-size:15px;}
+  .pb-status{margin-left:auto;font-family:'Chakra Petch',monospace;font-size:11px;color:var(--cyan);}
+
+  .agents{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;padding:14px;}
+  @media(max-width:700px){.agents{grid-template-columns:1fr 1fr;}}
+  @media(max-width:460px){.agents{grid-template-columns:1fr;}}
+  .agent{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:11px;position:relative;overflow:hidden;transition:all .4s;}
+  .agent::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--dimmer);}
+  .agent.buy::before{background:var(--green);}.agent.sell::before{background:var(--red);}.agent.hold::before{background:var(--amber);}
+  .agent.changed{box-shadow:0 0 0 1px var(--cyan);}
+  .ag-head{display:flex;align-items:center;gap:7px;margin-bottom:5px;}
+  .ag-ico{width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px;background:var(--panel);border:1px solid var(--line);}
+  .ag-name{font-size:11px;font-weight:700;}
+  .ag-verdict{display:flex;align-items:baseline;gap:6px;margin:5px 0 4px;min-height:20px;}
+  .vtag{font-family:'Chakra Petch',monospace;font-size:11px;font-weight:700;padding:1px 7px;border-radius:4px;}
+  .vtag.buy{color:var(--green);background:rgba(43,217,122,.12);}.vtag.sell{color:var(--red);background:rgba(255,77,94,.12);}.vtag.hold{color:var(--amber);background:rgba(255,182,39,.12);}
+  .vconf{font-family:'Chakra Petch',monospace;font-size:10px;color:var(--dim);}
+  .flag{font-size:8px;color:var(--cyan);font-family:'Chakra Petch',monospace;margin-left:auto;}
+  .ag-reason{font-size:10px;color:var(--dim);line-height:1.45;min-height:28px;}
+  .thinking{font-family:'Chakra Petch',monospace;font-size:10px;color:var(--cyan);}
+  .thinking::after{content:"▋";animation:blink .8s infinite;}@keyframes blink{50%{opacity:0;}}
+
+  .verdict{margin:0 14px 14px;background:linear-gradient(160deg,var(--panel-2),var(--panel));border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
+  .v-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:10px;}
+  .v-final{font-family:'Chakra Petch',monospace;font-size:30px;font-weight:700;line-height:1;}
+  .v-final.buy{color:var(--green);text-shadow:0 0 24px rgba(43,217,122,.4);}.v-final.sell{color:var(--red);text-shadow:0 0 24px rgba(255,77,94,.4);}.v-final.hold{color:var(--amber);text-shadow:0 0 24px rgba(255,182,39,.4);}
+  .v-meta{display:flex;gap:20px;flex-wrap:wrap;}
+  .v-meta .k{font-size:9px;color:var(--dimmer);letter-spacing:1px;margin-bottom:2px;font-family:'Chakra Petch',monospace;}
+  .v-meta .vv{font-size:14px;font-weight:700;font-family:'Chakra Petch',monospace;}
+  .v-sum{font-size:12px;line-height:1.65;color:var(--dim);}
+  .v-sum b{color:var(--text);}
+
+  .err{background:rgba(255,77,94,.1);border:1px solid var(--red);color:var(--red);padding:10px 14px;border-radius:9px;font-size:12px;margin-top:12px;display:none;}
+  .disclaimer{margin-top:26px;font-size:10.5px;color:var(--dimmer);line-height:1.6;text-align:center;border-top:1px solid var(--line);padding-top:16px;}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">A</div>
+    <div><h1>分析師軍團 <span style="color:var(--cyan)">Scanner + Council</span></h1><div class="sub mono">AUTO-SCAN → 9 AGENT DEBATE</div></div>
+  </div>
+  <div class="mono" style="font-size:11px;color:var(--dim)">即時幣安數據 · AI 討論</div>
+</header>
+
+<div class="wrap">
+  <div class="bar">
+    <input class="key-input" type="password" id="apiKey" placeholder="貼上 Groq API Key（console.groq.com/keys 免費取得）">
+    <button class="btn ghost" id="cfgBtn">⚙️ Proxy</button>
+    <button class="btn ghost" id="scanBtn">🔍 掃描全市場</button>
+  </div>
+  <div id="cfgBox" class="hidden" style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px">
+    <div style="font-size:12px;color:var(--dim);margin-bottom:10px;line-height:1.6">
+      貼上你部署好的 <b style="color:var(--text)">Cloudflare Worker 網址</b>（用來抓真實幣安數據、解決 CORS）。<br>
+      格式像：<span class="mono" style="color:var(--cyan)">https://你的名稱.workers.dev</span>
+    </div>
+    <div style="display:flex;gap:10px">
+      <input class="key-input" type="text" id="proxyInput" placeholder="https://xxx.workers.dev" style="flex:1">
+      <button class="btn" id="proxySave">儲存</button>
+    </div>
+  </div>
+  <div class="err" id="errBox"></div>
+
+  <div id="scanArea" class="hidden">
+    <div class="stage-label">全市場掃描 · 自動篩選（點任一幣 → 9位分析師討論）</div>
+    <div class="scan">
+      <div class="col long">
+        <div class="col-head">📈 做多推薦 <span class="cnt" id="cntLong">0</span></div>
+        <div id="listLong"></div>
+      </div>
+      <div class="col short">
+        <div class="col-head">📉 做空推薦 <span class="cnt" id="cntShort">0</span></div>
+        <div id="listShort"></div>
+      </div>
+      <div class="col alert">
+        <div class="col-head">⚡ 持倉異常警報 <span class="cnt" id="cntAlert">0</span></div>
+        <div id="listAlert"></div>
+      </div>
+    </div>
+    <div class="hint">💡 篩選引擎用漲跌幅、量能、RSI、OI、資金費率自動排序（不花 AI 額度）。點選想深入分析的幣，才會啟動 9 位 AI 討論。</div>
+
+    <div style="text-align:center;margin-top:18px">
+      <button class="btn" id="rankBtn">🏆 讓 9 位分析師評選最高勝率 Top 3</button>
+    </div>
+  </div>
+
+  <div id="rankArea" class="hidden">
+    <div class="stage-label" id="rankLabel">Top 3 評選 · 9 位分析師對全候選池打分</div>
+    <div class="panel-box">
+      <div class="pb-head"><span class="pb-title mono">🏆 勝率評分矩陣</span><span class="pb-status mono" id="rankStatus"></span></div>
+      <div style="overflow-x:auto">
+        <table id="matrix" style="width:100%;border-collapse:collapse;font-family:'Chakra Petch',monospace;font-size:11px;min-width:560px"></table>
+      </div>
+      <div id="rankVerdict" class="verdict hidden" style="margin-top:14px">
+        <div style="font-size:12px;color:var(--dim);line-height:1.65" id="rankSum"></div>
+      </div>
+    </div>
+    <div id="top3cards" class="scan" style="margin-top:14px"></div>
+  </div>
+
+  <div id="analysisArea" class="hidden">
+    <div class="stage-label" id="anaLabel">分析中</div>
+    <div class="panel-box">
+      <div class="pb-head"><span class="pb-title mono" id="pbTitle">—</span><span class="pb-status mono" id="pbStatus"></span></div>
+      <div class="agents" id="agents"></div>
+      <div class="verdict hidden" id="verdict">
+        <div class="v-top">
+          <div class="v-final mono" id="vFinal">—</div>
+          <div class="v-meta">
+            <div><div class="k">倉位</div><div class="vv" id="vPos">—</div></div>
+            <div><div class="k">信心</div><div class="vv" style="color:var(--cyan)" id="vConf">—</div></div>
+            <div><div class="k">票數 多/觀/空</div><div class="vv" id="vTally">—</div></div>
+          </div>
+        </div>
+        <div class="v-sum" id="vSum"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="disclaimer">
+    ⚠️ 市場數據來自幣安合約即時 API（經 Cloudflare Worker 轉發）。技術指標 RSI、短期變化由 K 線即時計算。<br>
+    OI 異動與清算數據此版尚未納入（顯示為基準值）。AI 分析會出錯，加密貨幣風險極高，僅供研究參考，絕非投資建議或自動交易指令。
+  </div>
+</div>
+
+<script>
+// ---------- 幣安 Proxy 設定 ----------
+// 部署 binance-proxy-worker.js 到 Cloudflare 後，把你的 Worker 網址貼在這裡
+let PROXY_URL = localStorage.getItem('proxyUrl') || '';
+
+const MAJORS=['BTC','ETH','SOL','XRP','BCH','AVAX','LINK','DOGE','APT','SUI','NEAR','BNB','ADA','TRX','TON','DOT','MATIC','LTC'];
+
+// 從 proxy 抓全市場真實數據
+async function fetchMarket(){
+  if(!PROXY_URL) throw new Error('尚未設定 Proxy 網址');
+  const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=market');
+  if(!res.ok) throw new Error('Proxy 回應錯誤 '+res.status);
+  const data=await res.json();
+  if(data.error) throw new Error('幣安: '+data.error);
+  return data.market; // [{symbol,pair,price,chg24,volUSDT,high24,low24,funding}]
+}
+
+// 抓單一幣 K線並計算 RSI + 短期變化
+async function fetchKlineMetrics(pair){
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=klines&symbol=${pair}&interval=5m&limit=50`);
+    const k=await res.json();
+    if(!Array.isArray(k)||k.length<20) return null;
+    const closes=k.map(x=>parseFloat(x[4]));
+    const vols=k.map(x=>parseFloat(x[5]));
+    const rsi=calcRSI(closes,14);
+    const last=closes[closes.length-1];
+    const p5=closes[closes.length-2];      // 上一根 5m
+    const p15=closes[closes.length-4];     // 3根前 ≈ 15m
+    const chg5m=p5?((last-p5)/p5*100):0;
+    const chg15m=p15?((last-p15)/p15*100):0;
+    const curVol=vols[vols.length-1];
+    const avgVol=vols.slice(-21,-1).reduce((a,b)=>a+b,0)/20;
+    const volMult=avgVol?curVol/avgVol:1;
+    return {rsi,chg5m:+chg5m.toFixed(2),chg15m:+chg15m.toFixed(2),volMult:+volMult.toFixed(1)};
+  }catch(e){ return null; }
+}
+
+function calcRSI(closes,period=14){
+  if(closes.length<period+1) return 50;
+  let gains=0,losses=0;
+  for(let i=closes.length-period;i<closes.length;i++){
+    const d=closes[i]-closes[i-1];
+    if(d>=0) gains+=d; else losses-=d;
+  }
+  const avgG=gains/period, avgL=losses/period;
+  if(avgL===0) return 100;
+  const rs=avgG/avgL;
+  return Math.round(100-100/(1+rs));
+}
+// ---------- 篩選 + 警報引擎（真實邏輯，純計算，不花 AI）----------
+// 多條件警報：四個偵測器，至少2個同時觸發才警報
+function detectAlert(c){
+  const triggers=[];   // 記錄觸發了哪些條件
+  const chg5m=c.chg5m??0, chg15m=c.chg15m??0, volMult=c.volMult??1, oiChg5m=c.oiChg5m??0, liqSpike=c.liqSpike??0;
+  // 偵測器1：價格急漲急跌（閾值依市值分級）
+  const th5=c.isMajor?2:4, th15=c.isMajor?3.5:6;
+  if(Math.abs(chg5m)>=th5) triggers.push({t:'price5',label:`5m ${chg5m>0?'+':''}${chg5m}%`});
+  else if(Math.abs(chg15m)>=th15) triggers.push({t:'price15',label:`15m ${chg15m>0?'+':''}${chg15m}%`});
+  // 偵測器2：成交量暴增
+  if(volMult>=3) triggers.push({t:'vol',label:`量增 ${volMult}x`});
+  // 偵測器3：OI 未平倉異動
+  if(Math.abs(oiChg5m)>=8) triggers.push({t:'oi',label:`OI ${oiChg5m>0?'+':''}${oiChg5m}%`});
+  // 偵測器4：資金費率極端 或 大額清算
+  if(c.funding>0.05||c.funding<-0.03) triggers.push({t:'fund',label:`資金 ${c.funding>0?'+':''}${c.funding}%`});
+  else if(liqSpike>=3) triggers.push({t:'liq',label:`清算 ${liqSpike}x`});
+
+  if(triggers.length<2) return null;  // 至少2條件才警報
+
+  // 判讀警報類型
+  const priceUp=(chg5m>0);
+  const oiUp=oiChg5m>0;
+  const hasOI=triggers.some(x=>x.t==='oi');
+  const hasFund=triggers.some(x=>x.t==='fund'||x.t==='liq');
+  let type,typeColor;
+  if(hasOI&&oiUp&&priceUp){type='多頭強勢進場';typeColor='var(--green)';}
+  else if(hasOI&&oiUp&&!priceUp){type='空頭強勢進場';typeColor='var(--red)';}
+  else if(hasOI&&!oiUp&&priceUp){type='空頭回補·動能或衰竭';typeColor='var(--amber)';}
+  else if(hasOI&&!oiUp&&!priceUp){type='多頭認賠·或近底部';typeColor='var(--amber)';}
+  else if(hasFund){type='槓桿過熱·留意反轉';typeColor='var(--amber)';}
+  else {type=priceUp?'放量急拉':'放量急殺';typeColor=priceUp?'var(--green)':'var(--red)';}
+
+  return {triggers,type,typeColor,dir:priceUp?'up':'dn',
+    score:+(triggers.length*10+Math.abs(c.chg5m)).toFixed(1)};
+}
+
+function screen(mkt){
+  const long=[],short=[],alert=[];
+  mkt.forEach(c=>{
+    // 容錯：K線指標可能缺失
+    const rsi=c.rsi??50, oiChg5m=c.oiChg5m??0, volMult=c.volMult??1;
+    const volScore=Math.min(1,(c.volUSDT||0)/1e9); // 用真實成交量(USDT)正規化
+    const longScore=c.chg24*1.0 + volScore*25 + (rsi<35?15:0) + (oiChg5m>0?oiChg5m*0.5:0) + (c.funding<0?10:0) + (volMult>2?10:0);
+    const shortScore=(-c.chg24)*1.0 + volScore*18 + (rsi>70?15:0) + (oiChg5m<0?-oiChg5m*0.5:0) + (c.funding>0.05?10:0);
+    if(longScore>15) long.push({...c,score:+longScore.toFixed(0)});
+    if(shortScore>13) short.push({...c,score:+shortScore.toFixed(0)});
+    const a=detectAlert(c);
+    if(a) alert.push({...c,...a});
+  });
+  long.sort((a,b)=>b.score-a.score);
+  short.sort((a,b)=>b.score-a.score);
+  alert.sort((a,b)=>b.score-a.score);
+  return {long:long.slice(0,5),short:short.slice(0,4),alert:alert.slice(0,6)};
+}
+
+// ---------- 9 位分析師 ----------
+const AGENTS=[
+  {id:'tech',name:'技術派',ico:'📈',persona:'理性數據',focus:'RSI、MACD、布林帶、均線'},
+  {id:'chain',name:'鏈上派',ico:'⛓️',persona:'追蹤大戶',focus:'交易所流量、鯨魚地址'},
+  {id:'senti',name:'情緒派',ico:'🧠',persona:'反人性',focus:'恐懼貪婪、社群熱度'},
+  {id:'news',name:'新聞派',ico:'📰',persona:'反應最快',focus:'監管、ETF、突發事件'},
+  {id:'smc',name:'SMC派',ico:'🎯',persona:'激進結構',focus:'流動性、訂單塊、FVG'},
+  {id:'flow',name:'訂單流',ico:'💹',persona:'短線精準',focus:'資金費率、OI、清算'},
+  {id:'chips',name:'籌碼派',ico:'🪙',persona:'長期結構',focus:'持有者分佈、交易所儲備'},
+  {id:'momo',name:'動能派',ico:'🚀',persona:'快進快出',focus:'量能爆發、題材（賽克斯）'},
+  {id:'macro',name:'總經派',ico:'🌐',persona:'大格局',focus:'美聯儲、利率、美元'},
+];
+const labelMap={buy:'買入',sell:'賣出',hold:'觀望'};
+let KEY='',MODEL='llama-3.3-70b-versatile';
+let MKT=[],SCREENED={},R1={},R2={},curCoin=null;
+const $=id=>document.getElementById(id);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function groq(system,user){
+  const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+    method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+KEY},
+    body:JSON.stringify({model:MODEL,messages:[{role:'system',content:system},{role:'user',content:user}],temperature:0.6,response_format:{type:'json_object'}})
+  });
+  if(!res.ok)throw new Error('Groq '+res.status+': '+(await res.text()).slice(0,160));
+  return (await res.json()).choices[0].message.content;
+}
+function pj(t){t=t.replace(/```json/g,'').replace(/```/g,'').trim();const s=t.indexOf('{'),e=t.lastIndexOf('}');if(s>=0)t=t.slice(s,e+1);return JSON.parse(t);}
+
+// ---------- render scan ----------
+function coinHTML(c,type){
+  const chgCls=c.chg24>=0?'chg-up':'chg-dn';
+  if(type==='alert'){
+    const dirIcon=c.dir==='up'?'▲':'▼';
+    const trigChips=c.triggers.map(t=>`<span class="chip">${t.label}</span>`).join('');
+    return `<div class="coin" data-sym="${c.sym}" data-type="alert">
+      <div class="coin-top">
+        <span class="coin-sym">${c.sym}</span>
+        ${c.isMajor?'<span class="chip" style="font-size:8px">大幣</span>':''}
+        <span class="coin-price">$${c.price}</span>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:${c.typeColor};margin:1px 0">${dirIcon} ${c.type}</div>
+      <div class="coin-meta">${trigChips}
+        <span class="chip" style="border-color:${c.typeColor};color:${c.typeColor}">${c.triggers.length}項觸發</span>
+      </div>
+      <span class="ai-badge">▸ 點擊啟動 9 位 AI 討論</span>
+    </div>`;
+  }
+  return `<div class="coin" data-sym="${c.sym}" data-type="${type}">
+    <div class="coin-top">
+      <span class="coin-sym">${c.sym}</span>
+      <span class="coin-price">$${c.price}</span>
+    </div>
+    <div class="coin-meta">
+      <span class="chip ${chgCls}">${(c.chg24>0?'+':'')+c.chg24}%</span>
+      <span class="chip">RSI ${c.rsi}</span>
+      <span class="chip">資金 ${c.funding>0?'+':''}${c.funding}%</span>
+      <div class="strength"><div class="strength-fill" style="width:${Math.min(100,c.score*1.4)}%"></div></div>
+    </div>
+    <span class="ai-badge">▸ 點擊啟動 9 位 AI 討論</span>
+  </div>`;
+}
+function renderScan(){
+  $('listLong').innerHTML=SCREENED.long.map(c=>coinHTML(c,'long')).join('')||'<div class="coin" style="cursor:default;color:var(--dimmer)">本輪無</div>';
+  $('listShort').innerHTML=SCREENED.short.map(c=>coinHTML(c,'short')).join('')||'<div class="coin" style="cursor:default;color:var(--dimmer)">本輪無</div>';
+  $('listAlert').innerHTML=SCREENED.alert.map(c=>coinHTML(c,'alert')).join('')||'<div class="coin" style="cursor:default;color:var(--dimmer)">本輪無</div>';
+  $('cntLong').textContent=SCREENED.long.length;
+  $('cntShort').textContent=SCREENED.short.length;
+  $('cntAlert').textContent=SCREENED.alert.length;
+  document.querySelectorAll('.coin[data-sym]').forEach(el=>{
+    el.addEventListener('click',()=>analyze(el.dataset.sym));
+  });
+}
+async function doScan(){
+  $('errBox').style.display='none';
+  if(!PROXY_URL){
+    $('errBox').style.display='block';
+    $('errBox').innerHTML='尚未設定幣安 Proxy 網址。請點上方 ⚙️ 設定，貼上你的 Cloudflare Worker 網址。';
+    return;
+  }
+  const btn=$('scanBtn');btn.disabled=true;btn.textContent='◌ 抓取幣安數據中...';
+  $('scanArea').classList.remove('hidden');
+  try{
+    // 階段1：抓全市場真實數據（24h漲跌、量、資金費率）
+    btn.textContent='◌ 抓取全市場行情...';
+    let market=await fetchMarket();
+    // 標註大幣
+    market=market.map(c=>({...c,isMajor:MAJORS.includes(c.symbol),sym:c.symbol}));
+
+    // 階段2：用 24h/量/資金費率先粗篩出最值得細看的前 30 支
+    const prelim=market.map(c=>{
+      const volScore=Math.min(1,c.volUSDT/1e9);
+      const s=Math.abs(c.chg24)*1.0 + volScore*25 + Math.abs(c.funding)*40;
+      return {c,s};
+    }).sort((a,b)=>b.s-a.s).slice(0,30).map(x=>x.c);
+
+    // 階段3：對這 30 支並行抓 K線補 RSI/5m/15m/量倍數（分批避免一次太多）
+    btn.textContent='◌ 計算技術指標 (RSI/短期變化)...';
+    const enriched=[];
+    const batchSize=6;
+    for(let i=0;i<prelim.length;i+=batchSize){
+      const batch=prelim.slice(i,i+batchSize);
+      const results=await Promise.all(batch.map(async c=>{
+        const m=await fetchKlineMetrics(c.pair);
+        return {...c, rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1, oiChg5m:0, liqSpike:0};
+      }));
+      enriched.push(...results);
+      btn.textContent=`◌ 計算技術指標 ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`;
+    }
+
+    MKT=enriched;
+    SCREENED=screen(MKT);
+    renderScan();
+    btn.disabled=false;btn.textContent='🔍 重新掃描全市場';
+  }catch(e){
+    $('errBox').style.display='block';
+    $('errBox').textContent='掃描失敗：'+e.message+'（請確認 Proxy 網址正確、Worker 已部署）';
+    btn.disabled=false;btn.textContent='🔍 掃描全市場';
+  }
+}
+
+// ---------- analyze one coin with 9 agents ----------
+function buildAgents(){
+  $('agents').innerHTML=AGENTS.map(a=>`<div class="agent" id="ag-${a.id}">
+    <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div></div>
+    <div class="ag-verdict"><span class="thinking">分析中</span></div>
+    <div class="ag-reason"></div></div>`).join('');
+}
+function paint(id,v,conf,reason,changed){
+  const el=$('ag-'+id);el.className='agent '+v+(changed?' changed':'');
+  el.querySelector('.ag-verdict').innerHTML=`<span class="vtag ${v}">${labelMap[v]}</span><span class="vconf">${conf}%</span>`+(changed?`<span class="flag">↻改</span>`:'');
+  el.querySelector('.ag-reason').textContent=reason;
+}
+async function analyze(sym){
+  KEY=$('apiKey').value.trim();
+  if(!KEY){$('errBox').style.display='block';$('errBox').textContent='請先輸入 Groq API Key 才能啟動 AI 討論';return;}
+  const c=MKT.find(x=>x.sym===sym);curCoin=c;
+  document.querySelectorAll('.coin').forEach(e=>e.classList.toggle('selected',e.dataset.sym===sym));
+  R1={};R2={};
+  $('analysisArea').classList.remove('hidden');
+  $('anaLabel').textContent=sym+' · 9 位分析師多輪討論';
+  $('pbTitle').textContent=sym+' / USDT';
+  $('verdict').classList.add('hidden');
+  buildAgents();
+  $('analysisArea').scrollIntoView({behavior:'smooth',block:'start'});
+  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
+  try{
+    // Round 1
+    for(const a of AGENTS){
+      $('pbStatus').textContent=`第一輪 · ${a.name}`;
+      const sys=`你是加密分析師「${a.name}派」，個性${a.persona}，只看：${a.focus}。回JSON：{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句,25字內,從你專業角度"}`;
+      try{const r=pj(await groq(sys,`${sym} 數據：${dataStr}`));
+        const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
+        R1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—'};
+        paint(a.id,v,R1[a.id].confidence,R1[a.id].reason,false);
+      }catch(e){R1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paint(a.id,'hold',50,'(分析失敗)',false);}
+      await sleep(200);
+    }
+    // Round 2
+    await sleep(300);
+    const board=AGENTS.map(a=>`${a.name}:${labelMap[R1[a.id].verdict]}(${R1[a.id].confidence}%)-${R1[a.id].reason}`).join('\n');
+    for(const a of AGENTS){
+      $('pbStatus').textContent=`第二輪(看全場) · ${a.name}`;
+      const sys=`你是「${a.name}派」(${a.persona},看${a.focus})。看完全場9人意見後重新判斷:堅持或修正?回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句25字內,說明堅持或改變原因"}`;
+      try{const r=pj(await groq(sys,`${sym}數據:${dataStr}\n全場意見:\n${board}\n你原本:${labelMap[R1[a.id].verdict]}`));
+        const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:R1[a.id].verdict;
+        const ch=v!==R1[a.id].verdict;
+        R2[a.id]={verdict:v,confidence:r.confidence||R1[a.id].confidence,reason:r.reason||'—',changed:ch};
+        paint(a.id,v,R2[a.id].confidence,R2[a.id].reason,ch);
+      }catch(e){R2[a.id]={...R1[a.id],changed:false};}
+      await sleep(200);
+    }
+    // Verdict
+    $('pbStatus').textContent='總指揮裁決中...';
+    const cnt={buy:0,sell:0,hold:0};AGENTS.forEach(a=>cnt[R2[a.id].verdict]++);
+    const board2=AGENTS.map(a=>`${a.name}:${labelMap[R2[a.id].verdict]}(${R2[a.id].confidence}%)-${R2[a.id].reason}`).join('\n');
+    const sys=`你是分析師軍團總指揮(資深基金經理)。綜合9位討論後意見做裁決。回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,"summary":"繁中3-4句:如何權衡各方、為何這樣判、風險提示"}`;
+    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n討論後意見:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
+    const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
+    $('verdict').classList.remove('hidden');
+    $('vFinal').textContent=labelMap[v];$('vFinal').className='v-final mono '+v;
+    $('vPos').textContent=r.position||'—';$('vConf').textContent=(r.confidence||'—')+'%';
+    $('vTally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
+    $('vSum').innerHTML=r.summary||'—';
+    $('pbStatus').textContent='✓ 完成';
+  }catch(e){$('errBox').style.display='block';$('errBox').textContent=e.message;$('pbStatus').textContent='✗ 錯誤';}
+}
+
+// ---------- Top 3 評選 ----------
+let RANKING=[];
+function candidatePool(){
+  const pool={};
+  const add=(c,src)=>{ if(!pool[c.sym]) pool[c.sym]={...c,sources:[]}; if(!pool[c.sym].sources.includes(src))pool[c.sym].sources.push(src); };
+  (SCREENED.long||[]).forEach(c=>add(c,'多'));
+  (SCREENED.short||[]).forEach(c=>add(c,'空'));
+  (SCREENED.alert||[]).forEach(c=>add(c,'警'));
+  return Object.values(pool);
+}
+function coinDataLine(c){
+  return `${c.sym}(來源:${c.sources.join('/')}): 24h${c.chg24}%,5m${c.chg5m}%,15m${c.chg15m}%,RSI${c.rsi},量${c.volMult}x,OI${c.oiChg5m}%,資金${c.funding}%,清算${c.liqSpike}x`;
+}
+
+async function rankTop3(){
+  // 先確認已掃描
+  if(!SCREENED.long&&!SCREENED.short&&!SCREENED.alert){
+    $('errBox').style.display='block';$('errBox').textContent='請先按「🔍 掃描全市場」產生候選池，再評選 Top 3';
+    $('errBox').scrollIntoView({behavior:'smooth',block:'center'});return;
+  }
+  const pool=candidatePool();
+  if(pool.length<3){$('errBox').style.display='block';$('errBox').textContent=`候選池只有 ${pool.length} 支（需至少 3 支）。請再按一次掃描，或放寬篩選條件`;return;}
+  KEY=$('apiKey').value.trim();
+  if(!KEY){$('errBox').style.display='block';$('errBox').textContent='請先在最上方輸入 Groq API Key 才能評選';$('apiKey').scrollIntoView({behavior:'smooth',block:'center'});return;}
+  $('errBox').style.display='none';
+  const btn=$('rankBtn');btn.disabled=true;btn.textContent='◌ 評選中...';
+  $('rankArea').classList.remove('hidden');
+  $('rankVerdict').classList.add('hidden');
+  $('top3cards').innerHTML='';
+  const dh=$('deepHost');if(dh)dh.innerHTML='';
+  $('rankArea').scrollIntoView({behavior:'smooth',block:'start'});
+
+  const poolStr=pool.map(coinDataLine).join('\n');
+  const symbols=pool.map(c=>c.sym);
+  const scores={}; symbols.forEach(s=>scores[s]={sum:0,wsum:0,votes:[]});
+
+  try{
+  // 階段一：每位分析師對全候選池評分（勝率角度）
+  for(const a of AGENTS){
+    $('rankStatus').textContent=`${a.name} 評分中...`;
+    const sys=`你是加密分析師「${a.name}派」(個性${a.persona},專注${a.focus})。`+
+      `從你的專業角度，為每支候選幣評「勝率分數」(0-100)：訊號越明確、風險報酬比越好、越符合你流派的進場條件，分數越高。`+
+      `只回JSON:{"scores":{"幣代號":分數,...},"selfConf":你對自己這次評分的信心0-100}。所有候選幣都要給分。`;
+    try{
+      const r=pj(await groq(sys,`候選池:\n${poolStr}\n\n請為這些幣評勝率分數:${symbols.join(',')}`));
+      const w=(r.selfConf||60)/100;
+      symbols.forEach(s=>{
+        const sc=(r.scores&&typeof r.scores[s]==='number')?r.scores[s]:50;
+        scores[s].sum+=sc; scores[s].wsum+=sc*w; scores[s].votes.push({agent:a.name,score:sc});
+      });
+    }catch(e){ symbols.forEach(s=>{scores[s].sum+=50;scores[s].wsum+=50*0.6;scores[s].votes.push({agent:a.name,score:50});}); }
+    await sleep(180);
+  }
+
+  // 階段二：加權統計排序
+  RANKING=symbols.map(s=>{
+    const v=scores[s];
+    return {sym:s, avg:+(v.sum/AGENTS.length).toFixed(1), wavg:+(v.wsum/AGENTS.length).toFixed(1), votes:v.votes,
+      coin:pool.find(c=>c.sym===s)};
+  }).sort((a,b)=>b.wavg-a.wavg);
+
+  renderMatrix();
+
+  // 階段三：總指揮覆核
+  $('rankStatus').textContent='總指揮覆核 Top 3...';
+  const top5=RANKING.slice(0,5).map(r=>`${r.sym}:加權${r.wavg}(均${r.avg})`).join(', ');
+  let top3;
+  try{
+    const sys=`你是分析師軍團總指揮。9位分析師已對候選幣評勝率分數,加權排序如下。請確認最高勝率的Top 3,給出選擇理由。`+
+      `回JSON:{"top3":["幣1","幣2","幣3"],"summary":"繁中3-4句:為何選這3檔、它們勝率高在哪、風險提示"}`;
+    const r=pj(await groq(sys,`加權排序(高到低):${top5}\n候選數據:\n${poolStr}\n選出Top3最高勝率`));
+    top3=(r.top3||[]).filter(s=>symbols.includes(s)).slice(0,3);
+    if(top3.length<3){ for(const x of RANKING){ if(!top3.includes(x.sym)){top3.push(x.sym);} if(top3.length>=3)break; } }
+    $('rankVerdict').classList.remove('hidden');
+    $('rankSum').innerHTML=`<b style="color:var(--text)">總指揮裁定 Top 3：${top3.join(' · ')}</b><br>${r.summary||''}`;
+    $('rankStatus').textContent='✓ 評選完成';
+  }catch(e){
+    top3=RANKING.slice(0,3).map(r=>r.sym);
+    $('rankVerdict').classList.remove('hidden');
+    $('rankSum').innerHTML=`<b>Top 3（依加權分數）：${top3.join(' · ')}</b>`;
+    $('rankStatus').textContent='✓ 評選完成（總指揮覆核略過）';
+  }
+  renderTop3Cards(top3);
+  }catch(err){
+    $('errBox').style.display='block';$('errBox').textContent='評選發生錯誤：'+err.message;
+    $('rankStatus').textContent='✗ 錯誤';
+  }finally{
+    const btn=$('rankBtn');btn.disabled=false;btn.textContent='🏆 重新評選 Top 3';
+  }
+}
+
+function renderMatrix(){
+  const shortNames=AGENTS.map(a=>a.name.replace('派',''));
+  let head='<tr><th style="text-align:left;padding:7px 9px;color:var(--dim);position:sticky;left:0;background:var(--panel)">幣</th>'+
+    shortNames.map(n=>`<th style="padding:7px 5px;color:var(--dimmer);font-weight:400">${n}</th>`).join('')+
+    '<th style="padding:7px 9px;color:var(--cyan)">加權分</th></tr>';
+  const rows=RANKING.map((r,i)=>{
+    const cells=AGENTS.map(a=>{
+      const v=r.votes.find(x=>x.agent===a.name);
+      const sc=v?v.score:50;
+      const col=sc>=75?'var(--green)':sc>=55?'var(--text)':sc>=40?'var(--dim)':'var(--red)';
+      return `<td style="padding:6px 5px;text-align:center;color:${col}">${sc}</td>`;
+    }).join('');
+    const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
+    const hl=i<3?'background:rgba(54,226,226,.06)':'';
+    return `<tr style="border-top:1px solid var(--line);${hl}">
+      <td style="padding:6px 9px;font-weight:700;position:sticky;left:0;background:var(--panel)">${medal} ${r.sym}<br><span style="font-size:8px;color:var(--dimmer)">${r.coin.sources.join('/')}</span></td>
+      ${cells}
+      <td style="padding:6px 9px;text-align:center;font-weight:700;color:var(--cyan)">${r.wavg}</td></tr>`;
+  }).join('');
+  $('matrix').innerHTML=head+rows;
+}
+
+function renderTop3Cards(top3){
+  $('top3cards').innerHTML='';
+  // 標題列（避免重複插入）
+  if(!$('deepTitle')){
+    const lbl=document.createElement('div');
+    lbl.className='stage-label';lbl.id='deepTitle';lbl.style.gridColumn='1/-1';
+    lbl.textContent='對 Top 3 各自進行完整 9 人深度討論';
+    $('top3cards').parentElement.insertBefore(lbl,$('top3cards'));
+  }
+  autoDeepDive(top3);
+}
+
+async function autoDeepDive(top3){
+  // 為 Top 3 建立獨立討論卡片容器
+  let host=$('deepHost');
+  if(!host){
+    host=document.createElement('div');host.id='deepHost';
+    $('rankArea').appendChild(host);
+  }
+  host.innerHTML='';
+  for(let i=0;i<top3.length;i++){
+    const sym=top3[i];
+    const medal=i===0?'🥇':i===1?'🥈':'🥉';
+    await deepDiveCard(sym,medal,host);
+    await sleep(400);
+  }
+}
+
+// 獨立的深度討論卡片（不覆蓋彼此）
+async function deepDiveCard(sym,medal,host){
+  const c=MKT.find(x=>x.sym===sym);
+  const card=document.createElement('div');
+  card.className='panel-box';card.style.marginTop='12px';
+  card.innerHTML=`<div class="pb-head"><span class="pb-title mono">${medal} ${sym} / USDT</span><span class="pb-status mono dd-status">準備中</span></div>
+    <div class="agents dd-agents"></div>
+    <div class="verdict hidden dd-verdict">
+      <div class="v-top"><div class="v-final mono dd-final">—</div>
+        <div class="v-meta">
+          <div><div class="k">倉位</div><div class="vv dd-pos">—</div></div>
+          <div><div class="k">信心</div><div class="vv dd-conf" style="color:var(--cyan)">—</div></div>
+          <div><div class="k">票數 多/觀/空</div><div class="vv dd-tally">—</div></div>
+        </div></div>
+      <div class="v-sum dd-sum"></div>
+    </div>`;
+  host.appendChild(card);
+  const status=card.querySelector('.dd-status');
+  const agentsBox=card.querySelector('.dd-agents');
+  agentsBox.innerHTML=AGENTS.map(a=>`<div class="agent" data-aid="${a.id}">
+    <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div></div>
+    <div class="ag-verdict"><span class="thinking">分析中</span></div><div class="ag-reason"></div></div>`).join('');
+  const paintLocal=(id,v,conf,reason,changed)=>{
+    const el=agentsBox.querySelector(`[data-aid="${id}"]`);
+    el.className='agent '+v+(changed?' changed':'');
+    el.querySelector('.ag-verdict').innerHTML=`<span class="vtag ${v}">${labelMap[v]}</span><span class="vconf">${conf}%</span>`+(changed?`<span class="flag">↻改</span>`:'');
+    el.querySelector('.ag-reason').textContent=reason;
+  };
+  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
+  const r1={},r2={};
+  try{
+    for(const a of AGENTS){
+      status.textContent=`第一輪 · ${a.name}`;
+      const sys=`你是加密分析師「${a.name}派」，個性${a.persona}，只看：${a.focus}。回JSON：{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句,25字內"}`;
+      try{const r=pj(await groq(sys,`${sym} 數據：${dataStr}`));
+        const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
+        r1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—'};
+        paintLocal(a.id,v,r1[a.id].confidence,r1[a.id].reason,false);
+      }catch(e){r1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paintLocal(a.id,'hold',50,'(分析失敗)',false);}
+      await sleep(160);
+    }
+    const board=AGENTS.map(a=>`${a.name}:${labelMap[r1[a.id].verdict]}(${r1[a.id].confidence}%)-${r1[a.id].reason}`).join('\n');
+    for(const a of AGENTS){
+      status.textContent=`第二輪 · ${a.name}`;
+      const sys=`你是「${a.name}派」(${a.persona},看${a.focus})。看完全場9人意見後重新判斷:堅持或修正?回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中一句25字內"}`;
+      try{const r=pj(await groq(sys,`${sym}數據:${dataStr}\n全場:\n${board}\n你原本:${labelMap[r1[a.id].verdict]}`));
+        const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:r1[a.id].verdict;
+        const ch=v!==r1[a.id].verdict;
+        r2[a.id]={verdict:v,confidence:r.confidence||r1[a.id].confidence,reason:r.reason||'—',changed:ch};
+        paintLocal(a.id,v,r2[a.id].confidence,r2[a.id].reason,ch);
+      }catch(e){r2[a.id]={...r1[a.id],changed:false};}
+      await sleep(160);
+    }
+    status.textContent='總指揮裁決中...';
+    const cnt={buy:0,sell:0,hold:0};AGENTS.forEach(a=>cnt[r2[a.id].verdict]++);
+    const board2=AGENTS.map(a=>`${a.name}:${labelMap[r2[a.id].verdict]}(${r2[a.id].confidence}%)-${r2[a.id].reason}`).join('\n');
+    const sys=`你是總指揮。綜合9位討論後意見做裁決。回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,"summary":"繁中3-4句:權衡、理由、風險"}`;
+    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n討論後:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
+    const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
+    const vc=card.querySelector('.dd-verdict');vc.classList.remove('hidden');
+    const vf=card.querySelector('.dd-final');vf.textContent=labelMap[v];vf.className='v-final mono dd-final '+v;
+    card.querySelector('.dd-pos').textContent=r.position||'—';
+    card.querySelector('.dd-conf').textContent=(r.confidence||'—')+'%';
+    card.querySelector('.dd-tally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
+    card.querySelector('.dd-sum').innerHTML=r.summary||'—';
+    status.textContent='✓ 完成';
+  }catch(e){status.textContent='✗ 錯誤: '+e.message;}
+}
+
+$('rankBtn').addEventListener('click',rankTop3);
+$('scanBtn').addEventListener('click',doScan);
+
+// Proxy 設定
+$('cfgBtn').addEventListener('click',()=>{
+  $('cfgBox').classList.toggle('hidden');
+  $('proxyInput').value=PROXY_URL;
+});
+$('proxySave').addEventListener('click',()=>{
+  PROXY_URL=$('proxyInput').value.trim();
+  try{ localStorage.setItem('proxyUrl',PROXY_URL); }catch(e){}
+  $('cfgBox').classList.add('hidden');
+  $('errBox').style.display='block';
+  $('errBox').style.background='rgba(43,217,122,.1)';$('errBox').style.borderColor='var(--green)';$('errBox').style.color='var(--green)';
+  $('errBox').textContent='✓ Proxy 網址已儲存，可以開始掃描了';
+  setTimeout(()=>{$('errBox').style.display='none';$('errBox').style.background='';$('errBox').style.borderColor='';$('errBox').style.color='';},2500);
+});
+// 啟動時若沒設定 proxy，自動打開設定區
+if(!PROXY_URL){ $('cfgBox').classList.remove('hidden'); }
+</script>
+</body>
+</html>
