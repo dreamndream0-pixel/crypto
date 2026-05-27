@@ -84,6 +84,11 @@
   .ag-reason{font-size:10px;color:var(--dim);line-height:1.45;min-height:28px;}
   .thinking{font-family:'Chakra Petch',monospace;font-size:10px;color:var(--cyan);}
   .thinking::after{content:"▋";animation:blink .8s infinite;}@keyframes blink{50%{opacity:0;}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @keyframes flashUp{0%{color:var(--green);text-shadow:0 0 10px var(--green)}100%{}}
+  @keyframes flashDn{0%{color:var(--red);text-shadow:0 0 10px var(--red)}100%{}}
+  .flash-up{animation:flashUp .8s ease-out;}
+  .flash-dn{animation:flashDn .8s ease-out;}
 
   .verdict{margin:0 14px 14px;background:linear-gradient(160deg,var(--panel-2),var(--panel));border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
   .v-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:10px;}
@@ -128,7 +133,14 @@
   <div class="err" id="errBox"></div>
 
   <div id="scanArea" class="hidden">
-    <div class="stage-label">全市場掃描 · 自動篩選（點任一幣 → 9位分析師討論）</div>
+    <div class="stage-label" style="display:flex;align-items:center;gap:12px">
+      <span>全市場掃描 · 自動篩選</span>
+      <span id="liveStatus" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--green)">
+        <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite"></span>
+        <span id="liveText">即時更新中</span>
+      </span>
+      <button id="liveToggle" class="btn ghost" style="margin-left:auto;padding:5px 12px;font-size:11px">▶ 開啟即時</button>
+    </div>
     <div class="scan">
       <div class="col long">
         <div class="col-head">📈 做多推薦 <span class="cnt" id="cntLong">0</span></div>
@@ -254,13 +266,13 @@ function detectAlert(c){
   const triggers=[];   // 記錄觸發了哪些條件
   const chg5m=c.chg5m??0, chg15m=c.chg15m??0, volMult=c.volMult??1, oiChg5m=c.oiChg5m??0, liqSpike=c.liqSpike??0;
   // 偵測器1：價格急漲急跌（閾值依市值分級）
-  const th5=c.isMajor?2:4, th15=c.isMajor?3.5:6;
+  const th5=c.isMajor?1.5:3, th15=c.isMajor?3:5;
   if(Math.abs(chg5m)>=th5) triggers.push({t:'price5',label:`5m ${chg5m>0?'+':''}${chg5m}%`});
   else if(Math.abs(chg15m)>=th15) triggers.push({t:'price15',label:`15m ${chg15m>0?'+':''}${chg15m}%`});
   // 偵測器2：成交量暴增
-  if(volMult>=3) triggers.push({t:'vol',label:`量增 ${volMult}x`});
+  if(volMult>=2.5) triggers.push({t:'vol',label:`量增 ${volMult}x`});
   // 偵測器3：OI 未平倉異動
-  if(Math.abs(oiChg5m)>=8) triggers.push({t:'oi',label:`OI ${oiChg5m>0?'+':''}${oiChg5m}%`});
+  if(Math.abs(oiChg5m)>=5) triggers.push({t:'oi',label:`OI ${oiChg5m>0?'+':''}${oiChg5m}%`});
   // 偵測器4：資金費率極端 或 大額清算
   if(c.funding>0.05||c.funding<-0.03) triggers.push({t:'fund',label:`資金 ${c.funding>0?'+':''}${c.funding}%`});
   else if(liqSpike>=3) triggers.push({t:'liq',label:`清算 ${liqSpike}x`});
@@ -341,7 +353,7 @@ function coinHTML(c,type){
       <div class="coin-top">
         <span class="coin-sym">${c.sym}</span>
         ${c.isMajor?'<span class="chip" style="font-size:8px">大幣</span>':''}
-        <span class="coin-price">$${c.price}</span>
+        <span class="coin-price" data-price-sym="${c.sym}">$${c.price}</span>
       </div>
       <div style="font-size:11px;font-weight:700;color:${c.typeColor};margin:1px 0">${dirIcon} ${c.type}</div>
       <div class="coin-meta">${trigChips}
@@ -353,10 +365,10 @@ function coinHTML(c,type){
   return `<div class="coin" data-sym="${c.sym}" data-type="${type}">
     <div class="coin-top">
       <span class="coin-sym">${c.sym}</span>
-      <span class="coin-price">$${c.price}</span>
+      <span class="coin-price" data-price-sym="${c.sym}">$${c.price}</span>
     </div>
     <div class="coin-meta">
-      <span class="chip ${chgCls}">${(c.chg24>0?'+':'')+c.chg24}%</span>
+      <span class="chip ${chgCls}" data-chg-sym="${c.sym}">${(c.chg24>0?'+':'')+c.chg24}%</span>
       <span class="chip">RSI ${c.rsi}</span>
       <span class="chip">資金 ${c.funding>0?'+':''}${c.funding}%</span>
       <div class="strength"><div class="strength-fill" style="width:${Math.min(100,c.score*1.4)}%"></div></div>
@@ -375,14 +387,15 @@ function renderScan(){
     el.addEventListener('click',()=>analyze(el.dataset.sym));
   });
 }
-async function doScan(){
-  $('errBox').style.display='none';
+async function doScan(silent=false){
+  if(!silent) $('errBox').style.display='none';
   if(!PROXY_URL){
     $('errBox').style.display='block';
     $('errBox').innerHTML='尚未設定幣安 Proxy 網址。請點上方 ⚙️ 設定，貼上你的 Cloudflare Worker 網址。';
     return;
   }
-  const btn=$('scanBtn');btn.disabled=true;btn.textContent='◌ 抓取幣安數據中...';
+  const btn=$('scanBtn');
+  if(!silent){ btn.disabled=true;btn.textContent='◌ 抓取幣安數據中...'; }
   $('scanArea').classList.remove('hidden');
   try{
     // 階段1：抓全市場真實數據（24h漲跌、量、資金費率）
@@ -399,7 +412,7 @@ async function doScan(){
     }).sort((a,b)=>b.s-a.s).slice(0,60).map(x=>x.c);
 
     // 階段3：對這 30 支並行抓 K線(RSI/5m/15m/量倍數) + OI 變化（分批避免一次太多）
-    btn.textContent='◌ 計算技術指標 + OI 異動...';
+    if(!silent) btn.textContent='◌ 計算技術指標 + OI 異動...';
     const enriched=[];
     const batchSize=8;
     for(let i=0;i<prelim.length;i+=batchSize){
@@ -413,17 +426,19 @@ async function doScan(){
         return {...c, rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1, oiChg5m:oiChg, liqSpike:0};
       }));
       enriched.push(...results);
-      btn.textContent=`◌ 計算指標+OI ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`;
+      if(!silent) btn.textContent=`◌ 計算指標+OI ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`;
     }
 
     MKT=enriched;
     SCREENED=screen(MKT);
     renderScan();
-    btn.disabled=false;btn.textContent='🔍 重新掃描全市場';
+    if(!silent){ btn.disabled=false;btn.textContent='🔍 重新掃描全市場'; }
   }catch(e){
-    $('errBox').style.display='block';
-    $('errBox').textContent='掃描失敗：'+e.message+'（請確認 Proxy 網址正確、Worker 已部署）';
-    btn.disabled=false;btn.textContent='🔍 掃描全市場';
+    if(!silent){
+      $('errBox').style.display='block';
+      $('errBox').textContent='掃描失敗：'+e.message+'（請確認 Proxy 網址正確、Worker 已部署）';
+      btn.disabled=false;btn.textContent='🔍 掃描全市場';
+    }
   }
 }
 
@@ -705,7 +720,7 @@ async function deepDiveCard(sym,medal,host){
 }
 
 $('rankBtn').addEventListener('click',rankTop3);
-$('scanBtn').addEventListener('click',doScan);
+$('scanBtn').addEventListener('click',()=>doScan(false));
 
 // Proxy 設定
 $('cfgBtn').addEventListener('click',()=>{
@@ -723,6 +738,74 @@ $('proxySave').addEventListener('click',()=>{
 });
 // 啟動時若沒設定 proxy，自動打開設定區（已有預設網址則不彈出）
 if(!PROXY_URL){ $('cfgBox').classList.remove('hidden'); }
+
+// ---------- 即時更新 ----------
+let priceTimer=null, rescanTimer=null, liveOn=false;
+let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
+const PRICE_INTERVAL=5000;    // 價格每 5 秒
+const RESCAN_INTERVAL=60000;  // 篩選清單每 60 秒完整重排
+
+// 輕量：只更新已顯示幣的價格與漲跌
+async function tickPrices(){
+  if(document.hidden) return; // 分頁在背景時跳過，省請求
+  try{
+    const market=await fetchMarket();
+    const map={};
+    market.forEach(c=>map[c.symbol]=c);
+    // 更新所有畫面上的價格元素
+    document.querySelectorAll('[data-price-sym]').forEach(el=>{
+      const sym=el.getAttribute('data-price-sym');
+      const c=map[sym];
+      if(!c) return;
+      const old=lastPrices[sym];
+      el.textContent='$'+c.price;
+      if(old!==undefined && c.price!==old){
+        el.classList.remove('flash-up','flash-dn');
+        void el.offsetWidth; // 重置動畫
+        el.classList.add(c.price>old?'flash-up':'flash-dn');
+      }
+      lastPrices[sym]=c.price;
+    });
+    // 更新漲跌幅
+    document.querySelectorAll('[data-chg-sym]').forEach(el=>{
+      const sym=el.getAttribute('data-chg-sym');
+      const c=map[sym];
+      if(!c) return;
+      el.textContent=(c.chg24>0?'+':'')+c.chg24+'%';
+      el.className='chip '+(c.chg24>=0?'chg-up':'chg-dn');
+      el.setAttribute('data-chg-sym',sym);
+    });
+    $('liveText').textContent='即時更新中 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+  }catch(e){ /* 靜默，下次再試 */ }
+}
+
+// 重：完整重新掃描（重排篩選清單）
+async function tickRescan(){
+  if(document.hidden) return;
+  if(document.querySelector('.coin.selected')) return; // 使用者正在看某幣討論時不打斷
+  await doScan(true); // true = 靜默模式，不改按鈕文字
+}
+
+function startLive(){
+  liveOn=true;
+  $('liveStatus').style.display='inline-flex';
+  $('liveToggle').textContent='⏸ 暫停即時';
+  tickPrices();
+  priceTimer=setInterval(tickPrices,PRICE_INTERVAL);
+  rescanTimer=setInterval(tickRescan,RESCAN_INTERVAL);
+}
+function stopLive(){
+  liveOn=false;
+  $('liveStatus').style.display='none';
+  $('liveToggle').textContent='▶ 開啟即時';
+  clearInterval(priceTimer);clearInterval(rescanTimer);
+}
+$('liveToggle').addEventListener('click',()=>{ liveOn?stopLive():startLive(); });
+
+// 分頁切回前景時，若即時開著，立刻更新一次
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden && liveOn) tickPrices();
+});
 </script>
 </body>
 </html>
