@@ -110,6 +110,14 @@
   .watch-row{display:grid;grid-template-columns:minmax(100px,.8fr) minmax(120px,1fr) minmax(120px,1fr) 34px;gap:9px;align-items:center;border-top:1px solid var(--line);padding:10px 14px;}
   .watch-row:hover{background:rgba(255,255,255,.025);}
   .watch-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .kline-box{border:1px solid var(--line);border-radius:10px;background:linear-gradient(180deg,rgba(17,21,31,.94),rgba(8,11,17,.96));padding:10px;margin:10px 0;}
+  .kline-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;}
+  .kline-title{font-size:11px;font-weight:800;color:var(--text);font-family:'Chakra Petch',monospace;}
+  .kline-meta{font-size:10px;color:var(--dim);font-family:'Chakra Petch',monospace;margin-left:auto;}
+  .kline-tabs{display:flex;gap:5px;flex-wrap:wrap;}
+  .kline-tab{font-family:'Chakra Petch',monospace;font-size:10px;padding:4px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel-2);color:var(--dim);cursor:pointer;}
+  .kline-tab.active{border-color:var(--cyan);color:var(--cyan);background:rgba(54,226,226,.08);}
+  .kline-canvas{width:100%;height:260px;display:block;border-radius:8px;background:#070a10;}
   @media(max-width:900px){.rec-detail-grid{grid-template-columns:1fr 1fr;}.rec-head{grid-template-columns:1fr 1fr 1fr!important;}}
   @media(max-width:1100px){.report-grid{grid-template-columns:repeat(3,minmax(0,1fr));}.watch-row{grid-template-columns:1fr 1fr;}}
   @media(max-width:560px){.rec-detail-grid{grid-template-columns:1fr;}.rec-head{grid-template-columns:1fr 1fr!important;}.report-grid{grid-template-columns:1fr;}.watch-row{grid-template-columns:1fr;}}
@@ -701,6 +709,19 @@ function coinHTML(c,type){
       <div>新聞筆數：${MARKET_CONTEXT?.news?.length??0}</div>
       <div>熱門幣資料：${MARKET_CONTEXT?.trendingCoins?.length??0} 筆</div>
     </div>
+    <div class="kline-box" data-chart-sym="${c.sym}" data-chart-pair="${c.pair}">
+      <div class="kline-head">
+        <div class="kline-title">${c.sym} / USDT 即時K線</div>
+        <div class="kline-tabs">
+          <button class="kline-tab" data-interval="1m">1m</button>
+          <button class="kline-tab active" data-interval="5m">5m</button>
+          <button class="kline-tab" data-interval="15m">15m</button>
+          <button class="kline-tab" data-interval="1h">1h</button>
+        </div>
+        <div class="kline-meta" data-chart-meta="${c.sym}">等待載入</div>
+      </div>
+      <canvas class="kline-canvas" data-chart-canvas="${c.sym}" height="260"></canvas>
+    </div>
     <div class="watch-actions">
       <button class="btn analyze-btn" data-sym="${c.sym}" style="flex:1;min-width:180px;padding:8px;font-size:11px">▸ 啟動 9 位 AI 討論</button>
       <button class="btn ghost watch-quick-btn" data-sym="${c.sym}" style="flex:0 0 auto;padding:8px 12px;font-size:11px">＋ 追蹤幣別</button>
@@ -759,6 +780,15 @@ function renderScan(){
       const open=detail.style.display!=='none';
       detail.style.display=open?'none':'block';
       if(tog) tog.textContent=open?'▼':'▲';
+      if(!open) loadCoinChart(card);
+    });
+  });
+  document.querySelectorAll('.kline-tab').forEach(btn=>{
+    btn.addEventListener('click',(e)=>{
+      e.stopPropagation();
+      const box=btn.closest('.kline-box');
+      box.querySelectorAll('.kline-tab').forEach(x=>x.classList.toggle('active',x===btn));
+      loadCoinChart(box.closest('.coin'),btn.getAttribute('data-interval'),true);
     });
   });
   // 點啟動討論按鈕（用委派，避免重複綁定）
@@ -777,6 +807,127 @@ function renderScan(){
     });
   });
 }
+
+const KLINE_CACHE=new Map();
+
+async function fetchKlines(pair,interval='5m',limit=80){
+  const key=`${pair}:${interval}:${limit}`;
+  const cached=KLINE_CACHE.get(key);
+  if(cached&&Date.now()-cached.time<20*1000) return cached.rows;
+  const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=klines&symbol=${pair}&interval=${interval}&limit=${limit}`);
+  if(!res.ok) throw new Error('K線資料載入失敗');
+  const raw=await res.json();
+  if(!Array.isArray(raw)) throw new Error(raw?.error||'K線資料格式錯誤');
+  const rows=raw.map(k=>({
+    time:Number(k[0]),
+    open:Number(k[1]),
+    high:Number(k[2]),
+    low:Number(k[3]),
+    close:Number(k[4]),
+    volume:Number(k[5]),
+  })).filter(k=>Number.isFinite(k.close)&&Number.isFinite(k.high)&&Number.isFinite(k.low));
+  KLINE_CACHE.set(key,{time:Date.now(),rows});
+  return rows;
+}
+
+async function loadCoinChart(host,interval=null,force=false){
+  if(!host) return;
+  const box=host.querySelector('.kline-box');
+  if(!box) return;
+  const sym=box.getAttribute('data-chart-sym');
+  const pair=box.getAttribute('data-chart-pair')||`${sym}USDT`;
+  const active=interval||box.querySelector('.kline-tab.active')?.getAttribute('data-interval')||'5m';
+  const meta=box.querySelector('[data-chart-meta]');
+  const canvas=box.querySelector('canvas');
+  try{
+    if(meta) meta.textContent=`${active} 載入中...`;
+    if(force) KLINE_CACHE.delete(`${pair}:${active}:80`);
+    const rows=await fetchKlines(pair,active,80);
+    drawKline(canvas,rows,{sym,interval:active});
+  }catch(e){
+    if(meta) meta.textContent=e.message||'K線載入失敗';
+  }
+}
+
+function drawKline(canvas,rows,{sym,interval}={}){
+  if(!canvas||!rows||rows.length<5) return;
+  const box=canvas.closest('.kline-box');
+  const meta=box?.querySelector('[data-chart-meta]');
+  const rect=canvas.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1;
+  const w=Math.max(320,Math.floor(rect.width||canvas.clientWidth||720));
+  const h=260;
+  canvas.width=Math.floor(w*dpr);
+  canvas.height=Math.floor(h*dpr);
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  const pad={l:8,r:58,t:16,b:28};
+  const chartH=170, volH=42;
+  const highs=rows.map(r=>r.high), lows=rows.map(r=>r.low), vols=rows.map(r=>r.volume);
+  const hi=Math.max(...highs), lo=Math.min(...lows), maxVol=Math.max(...vols,1);
+  const range=hi-lo||hi*0.01||1;
+  const xStep=(w-pad.l-pad.r)/rows.length;
+  const y=p=>pad.t+(hi-p)/range*chartH;
+  ctx.fillStyle='#070a10';
+  ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle='rgba(82,92,110,.28)';
+  ctx.lineWidth=1;
+  for(let i=0;i<4;i++){
+    const yy=pad.t+i*(chartH/3);
+    ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(w-pad.r,yy);ctx.stroke();
+  }
+  ctx.font="10px 'Chakra Petch', monospace";
+  ctx.textAlign='right';
+  ctx.textBaseline='middle';
+  ctx.fillStyle='#8a93a6';
+  [hi,(hi+lo)/2,lo].forEach(p=>ctx.fillText(formatPrice(p),w-8,y(p)));
+  rows.forEach((r,i)=>{
+    const x=pad.l+i*xStep+xStep/2;
+    const up=r.close>=r.open;
+    const col=up?'#2bd97a':'#ff4d5e';
+    ctx.strokeStyle=col;ctx.fillStyle=col;
+    ctx.beginPath();ctx.moveTo(x,y(r.high));ctx.lineTo(x,y(r.low));ctx.stroke();
+    const bodyTop=y(Math.max(r.open,r.close));
+    const bodyH=Math.max(2,Math.abs(y(r.open)-y(r.close)));
+    const bodyW=Math.max(2,Math.min(8,xStep*.62));
+    ctx.globalAlpha=.92;
+    ctx.fillRect(x-bodyW/2,bodyTop,bodyW,bodyH);
+    ctx.globalAlpha=.28;
+    const vh=(r.volume/maxVol)*volH;
+    ctx.fillRect(x-bodyW/2,pad.t+chartH+18+(volH-vh),bodyW,vh);
+    ctx.globalAlpha=1;
+  });
+  const last=rows.at(-1), first=rows[0];
+  const chg=(last.close-first.open)/first.open*100;
+  const lastY=y(last.close);
+  ctx.strokeStyle=last.close>=first.open?'rgba(43,217,122,.75)':'rgba(255,77,94,.75)';
+  ctx.setLineDash([4,4]);
+  ctx.beginPath();ctx.moveTo(pad.l,lastY);ctx.lineTo(w-pad.r,lastY);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle=last.close>=first.open?'#2bd97a':'#ff4d5e';
+  ctx.textAlign='left';
+  ctx.fillText(formatPrice(last.close),w-pad.r+5,lastY);
+  ctx.fillStyle='#525c6e';
+  ctx.textAlign='left';
+  ctx.fillText(new Date(rows[0].time).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false}),pad.l,h-10);
+  ctx.textAlign='right';
+  ctx.fillText(new Date(last.time).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false}),w-pad.r,h-10);
+  if(meta){
+    const color=chg>=0?'var(--green)':'var(--red)';
+    meta.innerHTML=`${interval} · 最新 $${formatPrice(last.close)} · <span style="color:${color}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>`;
+  }
+}
+
+function formatPrice(n){
+  n=Number(n);
+  if(!Number.isFinite(n)) return '—';
+  if(n>=1000) return n.toFixed(1);
+  if(n>=100) return n.toFixed(2);
+  if(n>=1) return n.toFixed(4);
+  return n.toFixed(6);
+}
+
 async function doScan(silent=false){
   if(!silent) $('errBox').style.display='none';
   if(!PROXY_URL){
@@ -1757,7 +1908,7 @@ function flash(msg,type){
 }
 
 // ---------- 即時更新 ----------
-let priceTimer=null, rescanTimer=null, liveOn=false;
+let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0;
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 
 // 輕量：只更新已顯示幣的價格與漲跌
@@ -1798,6 +1949,12 @@ async function tickPrices(){
       refreshRecsWithPrices(priceMap,{sync:true});
       renderRecs();
     }
+    if(Date.now()-lastChartRefresh>30000){
+      lastChartRefresh=Date.now();
+      document.querySelectorAll('.coin-detail').forEach(detail=>{
+        if(detail.style.display!=='none') loadCoinChart(detail.closest('.coin'),null,true);
+      });
+    }
   }catch(e){ /* 靜默，下次再試 */ }
 }
 
@@ -1836,6 +1993,14 @@ $('autoToggle').addEventListener('click',()=>{ liveOn?stopLive():startLive(); })
 // 分頁切回前景時，若自動開著，立刻更新一次
 document.addEventListener('visibilitychange',()=>{
   if(!document.hidden && liveOn) tickPrices();
+});
+window.addEventListener('resize',()=>{
+  clearTimeout(window.__klineResizeTimer);
+  window.__klineResizeTimer=setTimeout(()=>{
+    document.querySelectorAll('.coin-detail').forEach(detail=>{
+      if(detail.style.display!=='none') loadCoinChart(detail.closest('.coin'));
+    });
+  },180);
 });
 </script>
 </body>
