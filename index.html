@@ -127,6 +127,7 @@
     </select>
     <select class="mode-select" id="finalProvider" title="總指揮模型">
       <option value="groq" selected>裁決 Groq</option>
+      <option value="gemini">裁決 Gemini</option>
       <option value="openai">裁決 OpenAI/GPT</option>
       <option value="anthropic">裁決 Claude</option>
     </select>
@@ -422,9 +423,9 @@ const AGENTS=[
     forbid:'不可講技術型態、不可講總經、不可講鏈上具體數字',
     method:'反向思考：恐懼貪婪過高、資金費率高、多空比過度偏多、短期暴漲=擁擠風險；恐懼貪婪過低、資金費率轉負、短期恐慌=反彈機會。必須引用資料中的真實情緒數值。'},
   {id:'news',name:'新聞派',ico:'📰',persona:'催化劑獵人',
-    allow:'Binance公告、CoinGecko熱門幣、近期重大事件假設、市場對事件的反應',
+    allow:'Binance公告、CoinGecko熱門幣、NewsAPI/免費RSS新聞、市場對事件的反應',
     forbid:'不可只看技術指標、不可講純鏈上數據',
-    method:'優先使用資料中的 Binance 公告與 CoinGecko trending；若沒有該幣直接新聞，必須說明「未見直接公告/題材」，再用量價異常推論可能催化劑，不可捏造新聞。'},
+    method:'優先使用資料中的 Binance 公告、CoinGecko trending、NewsAPI/免費RSS新聞；若沒有該幣直接新聞，必須說明「未見直接公告/題材」，再用量價異常推論可能催化劑，不可捏造新聞。'},
   {id:'smc',name:'SMC派',ico:'🎯',persona:'聰明錢結構',
     allow:'BOS/CHoCH 結構轉換、Order Block 訂單塊、FVG 公平價值缺口、流動性獵殺、Premium/Discount 區域',
     forbid:'不可講 RSI/MACD 等指標派分析、不可講基本面新聞、不可講鏈上',
@@ -503,6 +504,7 @@ function marketFeatures(c){
     newsAndNarrative:{
       trendingCoins:MARKET_CONTEXT?.trendingCoins||[],
       binanceAnnouncements:relatedAnnouncements(c.sym),
+      cryptoNews:relatedNews(c.sym),
       onchainAvailability:MARKET_CONTEXT?.onchainNote||'未取得鏈上資料來源'
     },
     volume:{quoteVolumeUSDT:c.volUSDT??0,volumeMultiple:c.volMult??1},
@@ -514,6 +516,13 @@ function relatedAnnouncements(sym){
   const rows=MARKET_CONTEXT?.announcements||[];
   const s=String(sym||'').toUpperCase();
   return rows.filter(a=>String(a.title||'').toUpperCase().includes(s)).slice(0,3);
+}
+
+function relatedNews(sym){
+  const rows=MARKET_CONTEXT?.news||[];
+  const s=String(sym||'').toUpperCase();
+  const direct=rows.filter(a=>String(a.title||'').toUpperCase().includes(s));
+  return (direct.length?direct:rows).slice(0,5);
 }
 
 function riskFlags(c){
@@ -543,6 +552,7 @@ function finalModelConfig(){
   const provider=$('finalProvider')?.value||'groq';
   if(provider==='openai') return {provider,model:localStorage.getItem('openaiFinalModel')||'gpt-5'};
   if(provider==='anthropic') return {provider,model:localStorage.getItem('anthropicFinalModel')||'claude-3-5-sonnet-latest'};
+  if(provider==='gemini') return {provider,model:localStorage.getItem('geminiFinalModel')||'gemini-2.5-flash'};
   return {provider:'groq',model:MODEL};
 }
 
@@ -590,6 +600,8 @@ function coinHTML(c,type){
       <div>頭部持倉多空比：${c.derivatives?.topTraderPosition?.longShortRatio??'—'}</div>
       <div>主動買賣比：${c.derivatives?.takerBuySell?.longShortRatio??'—'}</div>
       <div>恐懼貪婪：${MARKET_CONTEXT?.sentiment?`${MARKET_CONTEXT.sentiment.fearGreedValue} / ${MARKET_CONTEXT.sentiment.fearGreedLabel}`:'—'}</div>
+      <div>新聞筆數：${MARKET_CONTEXT?.news?.length??0}</div>
+      <div>熱門幣資料：${MARKET_CONTEXT?.trendingCoins?.length??0} 筆</div>
     </div>
     <button class="btn analyze-btn" data-sym="${c.sym}" style="width:100%;padding:8px;font-size:11px">▸ 啟動 9 位 AI 討論</button>
   </div>`;
@@ -1241,7 +1253,7 @@ $('finalProvider').addEventListener('change',()=>{
 const savedMode=localStorage.getItem('analysisMode');
 if(savedMode&&MODES[savedMode]) $('analysisMode').value=savedMode;
 const savedProvider=localStorage.getItem('finalProvider');
-if(savedProvider&&['groq','openai','anthropic'].includes(savedProvider)) $('finalProvider').value=savedProvider;
+if(savedProvider&&['groq','gemini','openai','anthropic'].includes(savedProvider)) $('finalProvider').value=savedProvider;
 updateModeUI();
 
 // ---------- 推薦記錄（雲端 KV）----------
