@@ -220,6 +220,14 @@ async function fetchMarket(){
   return data.market; // [{symbol,pair,price,chg24,volUSDT,high24,low24,funding}]
 }
 
+async function fetchMarketContext(){
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=context');
+    if(!res.ok) return null;
+    return await res.json();
+  }catch(e){ return null; }
+}
+
 // 抓單一幣 K線並計算 RSI + 短期變化
 async function fetchKlineMetrics(pair){
   try{
@@ -321,6 +329,14 @@ async function fetchOIChange(pair){
     return (typeof d.oiChange5m==='number')?d.oiChange5m:0;
   }catch(e){ return 0; }
 }
+
+async function fetchDerivativeMetrics(pair){
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=derivatives&symbol=${pair}`);
+    if(!res.ok) return null;
+    return await res.json();
+  }catch(e){ return null; }
+}
 // ---------- 篩選 + 警報引擎（真實邏輯，純計算，不花 AI）----------
 // 多條件警報：四個偵測器，至少2個同時觸發才警報
 function detectAlert(c){
@@ -362,9 +378,11 @@ function screen(mkt){
   mkt.forEach(c=>{
     // 容錯：K線指標可能缺失
     const rsi=c.rsi??50, oiChg5m=c.oiChg5m??0, volMult=c.volMult??1;
+    const takerRatio=c.derivatives?.takerBuySell?.longShortRatio??1;
+    const topRatio=c.derivatives?.topTraderPosition?.longShortRatio??1;
     const volScore=Math.min(1,(c.volUSDT||0)/1e9); // 用真實成交量(USDT)正規化
-    const longScore=c.chg24*1.0 + volScore*25 + (rsi<35?15:0) + (oiChg5m>0?oiChg5m*0.5:0) + (c.funding<0?10:0) + (volMult>2?10:0);
-    const shortScore=(-c.chg24)*1.0 + volScore*18 + (rsi>70?15:0) + (oiChg5m<0?-oiChg5m*0.5:0) + (c.funding>0.05?10:0);
+    const longScore=c.chg24*1.0 + volScore*25 + (rsi<35?15:0) + (oiChg5m>0?oiChg5m*0.5:0) + (c.funding<0?10:0) + (volMult>2?10:0) + (takerRatio>1.15?8:0) + (topRatio>1.1?6:0);
+    const shortScore=(-c.chg24)*1.0 + volScore*18 + (rsi>70?15:0) + (oiChg5m<0?-oiChg5m*0.5:0) + (c.funding>0.05?10:0) + (takerRatio<0.85?8:0) + (topRatio<0.9?6:0);
     if(longScore>15) long.push({...c,score:+longScore.toFixed(0)});
     if(shortScore>13) short.push({...c,score:+shortScore.toFixed(0)});
     const a=detectAlert(c);
@@ -385,23 +403,23 @@ const AGENTS=[
   {id:'chain',name:'鏈上派',ico:'⛓️',persona:'追蹤鯨魚',
     allow:'交易所淨流入流出、鯨魚地址持倉變化、活躍地址數、長短期持有者比例、礦工/驗證者行為',
     forbid:'不可只看價格 K 線、不可講技術指標 RSI/MACD、不可看新聞',
-    method:'從鏈上資金流動判斷大戶意圖：交易所淨流出=囤幣信號；鯨魚地址增持=看漲；長期持有者賣出=趨勢可能反轉。**注意：本系統目前僅有合約數據，鏈上原始數據受限，請依現有指標(成交額、OI 變化)推論鯨魚行為**。'},
+    method:'從鏈上資金流動判斷大戶意圖。**注意：公開免Key模式目前只會提供鏈上資料可用性註記；若資料中沒有真實鏈上欄位，必須明確說「鏈上資料未接入」，不可假裝看到鯨魚或地址變化。可用 OI/多空比作為合約端代理，但要標明是代理資料。**'},
   {id:'senti',name:'情緒派',ico:'🧠',persona:'反人性逆向',
-    allow:'恐懼貪婪指數、極端漲跌情緒、資金費率作為情緒代理、短期過熱/過冷',
+    allow:'恐懼貪婪指數、極端漲跌情緒、資金費率、全帳戶多空比、頭部持倉多空比',
     forbid:'不可講技術型態、不可講總經、不可講鏈上具體數字',
-    method:'反向思考：當所有指標都極度貪婪(資金費率高、短期暴漲、RSI超買)→看跌；極度恐懼(暴跌、資金費率轉負、RSI超賣)→看漲。逆勢操作是核心。'},
+    method:'反向思考：恐懼貪婪過高、資金費率高、多空比過度偏多、短期暴漲=擁擠風險；恐懼貪婪過低、資金費率轉負、短期恐慌=反彈機會。必須引用資料中的真實情緒數值。'},
   {id:'news',name:'新聞派',ico:'📰',persona:'催化劑獵人',
-    allow:'近期重大事件假設（如監管、ETF、駭客、上線）、市場對事件的反應',
+    allow:'Binance公告、CoinGecko熱門幣、近期重大事件假設、市場對事件的反應',
     forbid:'不可只看技術指標、不可講純鏈上數據',
-    method:'**重要：本系統目前沒有即時新聞 API，請依價格與量能的異常變化推論「是否可能有未公開的催化劑」**。例如：無原因暴漲+量能爆發=可能有利多消息；無原因急跌+OI 暴增=可能有利空。給出「假設情境」分析。'},
+    method:'優先使用資料中的 Binance 公告與 CoinGecko trending；若沒有該幣直接新聞，必須說明「未見直接公告/題材」，再用量價異常推論可能催化劑，不可捏造新聞。'},
   {id:'smc',name:'SMC派',ico:'🎯',persona:'聰明錢結構',
     allow:'BOS/CHoCH 結構轉換、Order Block 訂單塊、FVG 公平價值缺口、流動性獵殺、Premium/Discount 區域',
     forbid:'不可講 RSI/MACD 等指標派分析、不可講基本面新聞、不可講鏈上',
     method:'用 SMC（Smart Money Concept）框架：判斷市場結構是 HH-HL(多頭)還是 LH-LL(空頭)；流動性是否已被掃過；價格是否在 Discount(便宜區)或 Premium(昂貴區)。**依現有K線數據推論結構**。'},
   {id:'flow',name:'訂單流',ico:'💹',persona:'合約獵手',
-    allow:'資金費率、OI 5分鐘變化、未平倉變化、做多/做空比例、清算量',
+    allow:'資金費率、OI 5分鐘變化、全帳戶多空比、頭部交易員持倉多空比、主動買賣量比、清算量',
     forbid:'不可講 RSI/MACD 技術指標、不可講新聞鏈上、不可講長期趨勢',
-    method:'純看合約市場：資金費率>0.05%=多頭擁擠易軋空；<0%=空頭擁擠；OI 暴增+價漲=新多進場；OI 暴增+價跌=新空進場；OI 減少=有人平倉。判斷短線清算風險。'},
+    method:'純看合約市場：資金費率、OI、全帳戶多空比、頭部持倉比、主動買賣比交叉判斷。OI增+價漲+主動買比高=新多；OI增+價跌+主動賣強=新空；散戶多空比極端時留意反向清算。'},
   {id:'chips',name:'籌碼派',ico:'🪙',persona:'長期結構',
     allow:'24h成交額、長期持有者比例變化、交易所儲備變化、HODLer 行為',
     forbid:'不可講短線技術、不可講即時情緒、不可講新聞',
@@ -411,9 +429,9 @@ const AGENTS=[
     forbid:'不可講長期趨勢、不可講基本面、不可講總經',
     method:'賽克斯風格：題材+量能爆發=進場訊號；量增價漲=動能啟動；量縮價漲=動能衰竭；快進快出，見好就收。只看當下 5-15 分鐘的爆發力。'},
   {id:'macro',name:'總經派',ico:'🌐',persona:'宏觀視角',
-    allow:'美元指數假設、利率環境、市場風險偏好、BTC 主導性',
+    allow:'恐懼貪婪指數、全市場市值24h變化、BTC/ETH dominance、市場風險偏好',
     forbid:'不可講具體技術指標、不可講短線、不可講單幣鏈上',
-    method:'**重要：本系統沒有總經數據，請依 BTC 走勢推論市場風險偏好**。BTC 強=避險情緒低=山寨偏多；BTC 弱=避險情緒高=山寨偏空。給大方向判斷。'},
+    method:'用全市場市值變化、BTC dominance、ETH dominance、恐懼貪婪指數判斷風險偏好。BTC dominance上升且市場走弱=山寨承壓；市值擴張且恐懼下降=風險偏好回升。不可假裝看到未接入的美元/利率資料。'},
 ];
 // 建構嚴格的角色 prompt（確保 AI 依派別專業分析，不混淆）
 function agentRolePrompt(a){
@@ -421,11 +439,12 @@ function agentRolePrompt(a){
     `【你只能使用】${a.allow}\n`+
     `【你絕對不可】${a.forbid}\n`+
     `【你的分析方法】${a.method}\n`+
+    `【資料紀律】只能引用使用者提供的JSON資料；如果某項資料是null、空陣列或註記未接入，必須說資料不足，不可自行編造。\n`+
     `必須完全堅守你的流派視角，不可給跨領域的籠統答案。`;
 }
 const labelMap={buy:'買入',sell:'賣出',hold:'觀望'};
 let ACCESS_TOKEN=localStorage.getItem('accessToken')||'',MODEL='llama-3.1-8b-instant';
-let MKT=[],SCREENED={},R1={},R2={},curCoin=null;
+let MKT=[],SCREENED={},R1={},R2={},curCoin=null, MARKET_CONTEXT=null;
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function esc(v){
@@ -441,10 +460,31 @@ function marketFeatures(c){
       macd:c.macd||null,bollinger:c.bb||null,atr:c.atr??null,
       support:c.sr?.support??null,resistance:c.sr?.resistance??null
     },
-    derivatives:{fundingPct:c.funding??0,oiChange5mPct:c.oiChg5m??0},
+    derivatives:{
+      fundingPct:c.funding??0,oiChange5mPct:c.oiChg5m??0,
+      globalLongShort:c.derivatives?.globalLongShort||null,
+      topTraderPosition:c.derivatives?.topTraderPosition||null,
+      takerBuySell:c.derivatives?.takerBuySell||null
+    },
+    sentiment:{
+      fearGreedValue:MARKET_CONTEXT?.sentiment?.fearGreedValue??null,
+      fearGreedLabel:MARKET_CONTEXT?.sentiment?.fearGreedLabel??null
+    },
+    macroProxy:MARKET_CONTEXT?.macroProxy||null,
+    newsAndNarrative:{
+      trendingCoins:MARKET_CONTEXT?.trendingCoins||[],
+      binanceAnnouncements:relatedAnnouncements(c.sym),
+      onchainAvailability:MARKET_CONTEXT?.onchainNote||'未取得鏈上資料來源'
+    },
     volume:{quoteVolumeUSDT:c.volUSDT??0,volumeMultiple:c.volMult??1},
     riskFlags:riskFlags(c)
   };
+}
+
+function relatedAnnouncements(sym){
+  const rows=MARKET_CONTEXT?.announcements||[];
+  const s=String(sym||'').toUpperCase();
+  return rows.filter(a=>String(a.title||'').toUpperCase().includes(s)).slice(0,3);
 }
 
 function riskFlags(c){
@@ -456,6 +496,13 @@ function riskFlags(c){
   if(Math.abs(c.funding??0)>=0.05) flags.push('資金費率擁擠');
   if(c.bb&&c.bb.position>0.95) flags.push('貼近布林上緣');
   if(c.bb&&c.bb.position<0.05) flags.push('貼近布林下緣');
+  const gls=c.derivatives?.globalLongShort?.longShortRatio;
+  const taker=c.derivatives?.takerBuySell?.longShortRatio;
+  if(gls&&gls>2) flags.push('全帳戶多空比過度偏多');
+  if(gls&&gls<0.5) flags.push('全帳戶多空比過度偏空');
+  if(taker&&taker>1.3) flags.push('主動買盤偏強');
+  if(taker&&taker<0.75) flags.push('主動賣盤偏強');
+  if(relatedAnnouncements(c.sym).length>0) flags.push('存在相關 Binance 公告');
   return flags.length?flags:['無明顯極端風險'];
 }
 
@@ -500,6 +547,10 @@ function coinHTML(c,type){
       <div>OI 5m：<span style="color:${(c.oiChg5m||0)>=0?'var(--green)':'var(--red)'}">${c.oiChg5m>0?'+':''}${c.oiChg5m||0}%</span></div>
       <div>資金費率：<span style="color:${c.funding>0?'var(--amber)':'var(--cyan)'}">${c.funding>0?'+':''}${c.funding}%</span></div>
       <div>24h成交額：${(c.volUSDT/1e6).toFixed(0)}M</div>
+      <div>全帳戶多空比：${c.derivatives?.globalLongShort?.longShortRatio??'—'}</div>
+      <div>頭部持倉多空比：${c.derivatives?.topTraderPosition?.longShortRatio??'—'}</div>
+      <div>主動買賣比：${c.derivatives?.takerBuySell?.longShortRatio??'—'}</div>
+      <div>恐懼貪婪：${MARKET_CONTEXT?.sentiment?`${MARKET_CONTEXT.sentiment.fearGreedValue} / ${MARKET_CONTEXT.sentiment.fearGreedLabel}`:'—'}</div>
     </div>
     <button class="btn analyze-btn" data-sym="${c.sym}" style="width:100%;padding:8px;font-size:11px">▸ 啟動 9 位 AI 討論</button>
   </div>`;
@@ -578,7 +629,9 @@ async function doScan(silent=false){
   try{
     // 階段1：抓全市場真實數據
     showStatus('⚡ 抓取全市場行情...');
-    let market=await fetchMarket();
+    const [rawMarket,ctx]=await Promise.all([fetchMarket(),fetchMarketContext()]);
+    MARKET_CONTEXT=ctx;
+    let market=rawMarket;
     market=market.map(c=>({...c,isMajor:MAJORS.includes(c.symbol),sym:c.symbol}));
 
     // 階段2：用 24h/量/資金費率先粗篩出最值得細看的前 60 支
@@ -588,24 +641,24 @@ async function doScan(silent=false){
       return {c,s};
     }).sort((a,b)=>b.s-a.s).slice(0,60).map(x=>x.c);
 
-    // 階段3：對 60 支並行抓 K線 + OI
-    showStatus('⚡ 計算技術指標 + OI 異動...');
+    // 階段3：對 60 支並行抓 K線 + OI + 真實合約訂單流
+    showStatus('⚡ 計算技術指標 + OI + 多空比...');
     const enriched=[];
     const batchSize=8;
     for(let i=0;i<prelim.length;i+=batchSize){
       const batch=prelim.slice(i,i+batchSize);
       const results=await Promise.all(batch.map(async c=>{
-        const [m,oiChg]=await Promise.all([fetchKlineMetrics(c.pair),fetchOIChange(c.pair)]);
+        const [m,oiChg,deriv]=await Promise.all([fetchKlineMetrics(c.pair),fetchOIChange(c.pair),fetchDerivativeMetrics(c.pair)]);
         return {
           ...c,
           rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1,
           ema20:m?m.ema20:null, ema50:m?m.ema50:null, macd:m?m.macd:null, bb:m?m.bb:null,
           atr:m?m.atr:null, sr:m?m.sr:null, trend:m?m.trend:'未知',
-          oiChg5m:oiChg, liqSpike:0
+          oiChg5m:oiChg, derivatives:deriv, liqSpike:0
         };
       }));
       enriched.push(...results);
-      showStatus(`⚡ 計算指標+OI ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`);
+      showStatus(`⚡ 計算指標+OI+多空比 ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`);
     }
 
     MKT=enriched;
