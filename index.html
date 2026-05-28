@@ -183,7 +183,8 @@
   <div id="analysisArea" class="hidden">
     <div class="stage-label" id="anaLabel">分析中</div>
     <div class="panel-box">
-      <div class="pb-head"><span class="pb-title mono" id="pbTitle">—</span><span class="pb-status mono" id="pbStatus"></span></div>
+      <div class="pb-head" id="analysisHead" style="cursor:pointer;user-select:none"><span class="pb-title mono" id="pbTitle">—</span><span class="pb-status mono" id="pbStatus"></span><span class="mono" id="analysisToggle" style="margin-left:8px;color:var(--dimmer)">▲</span></div>
+      <div id="analysisBody">
       <div class="agents" id="agents"></div>
       <div class="verdict hidden" id="verdict">
         <div class="v-top">
@@ -195,6 +196,7 @@
           </div>
         </div>
         <div class="v-sum" id="vSum"></div>
+      </div>
       </div>
     </div>
   </div>
@@ -494,7 +496,12 @@ function marketFeatures(c){
       fundingPct:c.funding??0,oiChange5mPct:c.oiChg5m??0,
       globalLongShort:c.derivatives?.globalLongShort||null,
       topTraderPosition:c.derivatives?.topTraderPosition||null,
-      takerBuySell:c.derivatives?.takerBuySell||null
+      takerBuySell:c.derivatives?.takerBuySell||null,
+      okx:c.derivatives?.okx||null
+    },
+    exchanges:{
+      binance:{price:c.price,fundingPct:c.funding??0,volumeUSDT:c.volUSDT??0},
+      okx:c.okx||null
     },
     sentiment:{
       fearGreedValue:MARKET_CONTEXT?.sentiment?.fearGreedValue??null,
@@ -599,6 +606,10 @@ function coinHTML(c,type){
       <div>全帳戶多空比：${c.derivatives?.globalLongShort?.longShortRatio??'—'}</div>
       <div>頭部持倉多空比：${c.derivatives?.topTraderPosition?.longShortRatio??'—'}</div>
       <div>主動買賣比：${c.derivatives?.takerBuySell?.longShortRatio??'—'}</div>
+      <div>OKX價格：${c.okx?.price?'$'+c.okx.price:'—'}</div>
+      <div>OKX資金：${c.derivatives?.okx?.fundingRatePct??'—'}%</div>
+      <div>OKX OI：${c.derivatives?.okx?.openInterestCcy??c.derivatives?.okx?.openInterest??'—'}</div>
+      <div>OKX多空比：${c.derivatives?.okx?.longShortRatio?.ratio??'—'}</div>
       <div>恐懼貪婪：${MARKET_CONTEXT?.sentiment?`${MARKET_CONTEXT.sentiment.fearGreedValue} / ${MARKET_CONTEXT.sentiment.fearGreedLabel}`:'—'}</div>
       <div>新聞筆數：${MARKET_CONTEXT?.news?.length??0}</div>
       <div>熱門幣資料：${MARKET_CONTEXT?.trendingCoins?.length??0} 筆</div>
@@ -726,28 +737,16 @@ async function doScan(silent=false){
 
 // ---------- analyze one coin with 9 agents ----------
 function buildAgents(agents=activeAgents()){
-  $('agents').innerHTML=agents.map(a=>`<div class="agent collapsed" id="ag-${a.id}" data-aid="${a.id}">
-    <div class="ag-header" style="cursor:pointer;user-select:none">
+  $('agents').innerHTML=agents.map(a=>`<div class="agent" id="ag-${a.id}" data-aid="${a.id}">
+    <div class="ag-header">
       <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div>
-        <span class="ag-toggle" style="margin-left:auto;font-size:11px;color:var(--dimmer);font-family:'Chakra Petch',monospace">▼</span>
       </div>
       <div class="ag-verdict"><span class="thinking">分析中</span></div>
     </div>
-    <div class="ag-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+    <div class="ag-detail" style="display:block;border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
       <div class="ag-reason" style="font-size:11px;color:var(--text);line-height:1.55;margin-bottom:6px"></div>
       <div class="ag-evidence" style="font-size:10px;color:var(--dim);line-height:1.5"></div>
     </div></div>`).join('');
-  // 點擊展開
-  document.querySelectorAll('.agent[data-aid] .ag-header').forEach(h=>{
-    h.addEventListener('click',()=>{
-      const card=h.closest('.agent');
-      const detail=card.querySelector('.ag-detail');
-      const tog=card.querySelector('.ag-toggle');
-      const open=detail.style.display!=='none';
-      detail.style.display=open?'none':'block';
-      tog.textContent=open?'▼':'▲';
-    });
-  });
 }
 function paint(id,v,conf,reason,changed,evidence){
   const el=$('ag-'+id);el.className='agent '+v+(changed?' changed':'');
@@ -766,6 +765,8 @@ async function analyze(sym){
   document.querySelectorAll('.coin').forEach(e=>e.classList.toggle('selected',e.dataset.sym===sym));
   R1={};R2={};
   $('analysisArea').classList.remove('hidden');
+  $('analysisBody').style.display='block';
+  $('analysisToggle').textContent='▲';
   $('anaLabel').textContent=`${sym} · ${mode.label}模式 · ${agents.length} 位分析師${mode.secondRound?'兩輪討論':'一輪快評'}`;
   $('pbTitle').textContent=sym+' / USDT';
   $('verdict').classList.add('hidden');
@@ -937,7 +938,7 @@ function candidatePool(){
   return Object.values(pool);
 }
 function coinDataLine(c){
-  return `${c.sym}(來源:${c.sources.join('/')}): 24h${c.chg24}%,5m${c.chg5m}%,15m${c.chg15m}%,趨勢${c.trend||'未知'},RSI${c.rsi},MACD柱${c.macd?.hist??'—'},ATR${c.atr??'—'},支撐${c.sr?.support??'—'},壓力${c.sr?.resistance??'—'},量${c.volMult}x,OI${c.oiChg5m}%,資金${c.funding}%,清算${c.liqSpike}x`;
+  return `${c.sym}(來源:${c.sources.join('/')}): 24h${c.chg24}%,5m${c.chg5m}%,15m${c.chg15m}%,趨勢${c.trend||'未知'},RSI${c.rsi},MACD柱${c.macd?.hist??'—'},ATR${c.atr??'—'},支撐${c.sr?.support??'—'},壓力${c.sr?.resistance??'—'},量${c.volMult}x,OI${c.oiChg5m}%,資金${c.funding}%,OKX價${c.okx?.price??'—'},OKX資金${c.derivatives?.okx?.fundingRatePct??'—'}%,OKX多空${c.derivatives?.okx?.longShortRatio?.ratio??'—'},清算${c.liqSpike}x`;
 }
 
 function clamp(n,min=0,max=100){return Math.max(min,Math.min(max,n));}
@@ -1143,7 +1144,8 @@ async function deepDiveCard(sym,medal,host){
   const mode=getMode(), agents=activeAgents();
   const card=document.createElement('div');
   card.className='panel-box';card.style.marginTop='12px';
-  card.innerHTML=`<div class="pb-head"><span class="pb-title mono">${medal} ${sym} / USDT</span><span class="pb-status mono dd-status">準備中</span></div>
+  card.innerHTML=`<div class="pb-head coin-analysis-head" style="cursor:pointer;user-select:none"><span class="pb-title mono">${medal} ${sym} / USDT</span><span class="pb-status mono dd-status">準備中</span><span class="mono dd-toggle" style="margin-left:8px;color:var(--dimmer)">▲</span></div>
+    <div class="coin-analysis-body">
     <div class="agents dd-agents"></div>
     <div class="verdict hidden dd-verdict">
       <div class="v-top"><div class="v-final mono dd-final">—</div>
@@ -1153,28 +1155,28 @@ async function deepDiveCard(sym,medal,host){
           <div><div class="k">票數 多/觀/空</div><div class="vv dd-tally">—</div></div>
         </div></div>
       <div class="v-sum dd-sum"></div>
-    </div>`;
+    </div></div>`;
   host.appendChild(card);
   const status=card.querySelector('.dd-status');
   const agentsBox=card.querySelector('.dd-agents');
-  agentsBox.innerHTML=agents.map(a=>`<div class="agent collapsed" data-aid="${a.id}">
-    <div class="ag-header" style="cursor:pointer;user-select:none">
+  const head=card.querySelector('.coin-analysis-head');
+  head.addEventListener('click',()=>{
+    const body=card.querySelector('.coin-analysis-body');
+    const tog=card.querySelector('.dd-toggle');
+    const open=body.style.display!=='none';
+    body.style.display=open?'none':'block';
+    tog.textContent=open?'▼':'▲';
+  });
+  agentsBox.innerHTML=agents.map(a=>`<div class="agent" data-aid="${a.id}">
+    <div class="ag-header">
       <div class="ag-head"><div class="ag-ico">${a.ico}</div><div class="ag-name">${a.name}</div>
-        <span class="ag-toggle" style="margin-left:auto;font-size:11px;color:var(--dimmer);font-family:'Chakra Petch',monospace">▼</span>
       </div>
       <div class="ag-verdict"><span class="thinking">分析中</span></div>
     </div>
-    <div class="ag-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+    <div class="ag-detail" style="display:block;border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
       <div class="ag-reason" style="font-size:11px;color:var(--text);line-height:1.55;margin-bottom:6px"></div>
       <div class="ag-evidence" style="font-size:10px;color:var(--dim);line-height:1.5"></div>
     </div></div>`).join('');
-  // 點擊展開
-  agentsBox.querySelectorAll('.ag-header').forEach(h=>{
-    h.addEventListener('click',()=>{
-      const cd=h.closest('.agent'); const d=cd.querySelector('.ag-detail'); const t=cd.querySelector('.ag-toggle');
-      const open=d.style.display!=='none'; d.style.display=open?'none':'block'; t.textContent=open?'▼':'▲';
-    });
-  });
   const paintLocal=(id,v,conf,reason,changed,ev)=>{
     const el=agentsBox.querySelector(`[data-aid="${id}"]`);
     el.className='agent '+v+(changed?' changed':'');
@@ -1242,6 +1244,12 @@ async function deepDiveCard(sym,medal,host){
 }
 
 $('rankBtn').addEventListener('click',rankTop3);
+$('analysisHead').addEventListener('click',()=>{
+  const body=$('analysisBody'), tog=$('analysisToggle');
+  const open=body.style.display!=='none';
+  body.style.display=open?'none':'block';
+  tog.textContent=open?'▼':'▲';
+});
 $('analysisMode').addEventListener('change',()=>{
   try{ localStorage.setItem('analysisMode',$('analysisMode').value); }catch(e){}
   updateModeUI();
@@ -1258,6 +1266,7 @@ updateModeUI();
 
 // ---------- 推薦記錄（雲端 KV）----------
 let RECS=[];
+let recSyncBusy=false;
 async function saveRec(rec){
   if(!ACCESS_TOKEN) return;
   try{
@@ -1267,6 +1276,18 @@ async function saveRec(rec){
       body:JSON.stringify(rec)
     });
   }catch(e){ console.warn('存推薦失敗',e); }
+}
+async function syncRecUpdates(updates){
+  if(!ACCESS_TOKEN||updates.length===0||recSyncBusy) return;
+  recSyncBusy=true;
+  try{
+    await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=updateRecs',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Access-Token':ACCESS_TOKEN},
+      body:JSON.stringify({updates})
+    });
+  }catch(e){ console.warn('同步戰績狀態失敗',e); }
+  finally{ recSyncBusy=false; }
 }
 async function loadRecs(){
   try{
@@ -1294,6 +1315,8 @@ async function clearRecs(){
 // 計算每筆推薦的當下表現
 function recStatus(rec,curPrice){
   if(!curPrice||!rec.entry) return {pct:null,state:'—',color:'var(--dim)'};
+  if(rec.status==='已止盈') return {pct:rec.closePct??rec.lastPct??null,state:'已止盈',color:'var(--green)'};
+  if(rec.status==='已止損') return {pct:rec.closePct??rec.lastPct??null,state:'已止損',color:'var(--red)'};
   const isLong=rec.verdict==='buy';
   // 漲幅（做多用正向，做空反向）
   const rawPct=(curPrice-rec.entry)/rec.entry*100;
@@ -1312,12 +1335,33 @@ function recStatus(rec,curPrice){
   return {pct:+pct.toFixed(2),state,color};
 }
 
+function refreshRecsWithPrices(priceMap,{sync=false}={}){
+  const updates=[];
+  RECS=RECS.map(rec=>{
+    const cur=priceMap[rec.sym];
+    if(!cur||!rec.entry) return rec;
+    const st=recStatus({...rec,status:rec.status||'進行中'},cur);
+    const next={...rec,lastPrice:cur,lastPct:st.pct,lastCheckedAt:Date.now()};
+    if((!rec.status||rec.status==='進行中')&&(st.state==='已止盈'||st.state==='已止損')){
+      next.status=st.state;
+      next.closePrice=cur;
+      next.closePct=st.pct;
+      next.closedAt=Date.now();
+      updates.push({id:rec.id,status:st.state,closePrice:cur,closePct:st.pct,closedAt:next.closedAt,lastPrice:cur,lastPct:st.pct,lastCheckedAt:next.lastCheckedAt});
+    }
+    return next;
+  });
+  if(sync) syncRecUpdates(updates);
+  return updates;
+}
+
 function renderRecs(){
   const box=$('recsBody');
   if(!box) return;
   if(RECS.length===0){ box.innerHTML='<div style="padding:18px;text-align:center;color:var(--dimmer);font-size:12px">尚無推薦記錄。點幣討論或評選 Top 3，有方向的裁決會自動記錄在這裡。</div>'; return; }
   // 用目前 MKT 的最新價算表現
   const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c.price);
+  refreshRecsWithPrices(priceMap);
   let wins=0,total=0;
   const rows=RECS.map(rec=>{
     const cur=priceMap[rec.sym];
@@ -1330,7 +1374,7 @@ function renderRecs(){
     return `<tr style="border-top:1px solid var(--line)">
       <td style="padding:8px 10px;font-weight:700">${rec.sym} <span style="color:${dirColor};font-size:10px">${dir}</span></td>
       <td style="padding:8px 10px;text-align:right">$${rec.entry}</td>
-      <td style="padding:8px 10px;text-align:right;color:var(--dim)">${cur?'$'+cur:'—'}</td>
+      <td style="padding:8px 10px;text-align:right;color:var(--dim)">${cur?'$'+cur:(rec.lastPrice?'$'+rec.lastPrice:'—')}</td>
       <td style="padding:8px 10px;text-align:right;color:${st.pct>=0?'var(--green)':'var(--red)'};font-weight:700">${st.pct!==null?(st.pct>0?'+':'')+st.pct+'%':'—'}</td>
       <td style="padding:8px 10px;text-align:center;color:${st.color};font-size:11px">${st.state}</td>
       <td style="padding:8px 10px;text-align:right;color:var(--dimmer);font-size:10px">${t}</td>
@@ -1425,7 +1469,11 @@ async function tickPrices(){
     $('liveText').textContent='即時更新中 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
     // 用最新價更新 MKT 價格，順便刷新戰績損益
     market.forEach(c=>{ const idx=MKT.findIndex(x=>x.sym===c.symbol); if(idx>=0) MKT[idx].price=c.price; });
-    if(RECS.length>0) renderRecs();
+    if(RECS.length>0){
+      const priceMap={};market.forEach(c=>priceMap[c.symbol]=c.price);
+      refreshRecsWithPrices(priceMap,{sync:true});
+      renderRecs();
+    }
   }catch(e){ /* 靜默，下次再試 */ }
 }
 
