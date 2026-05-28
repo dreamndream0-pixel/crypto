@@ -23,6 +23,7 @@
   .wrap{width:min(96vw,1760px);margin:0 auto;padding:22px clamp(16px,2vw,32px);}
 
   .bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:20px;}
+  .login-user{flex:.45;min-width:150px;}
   .key-input{flex:1;min-width:200px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:10px 13px;border-radius:9px;font-size:12px;font-family:'Chakra Petch',monospace;}
   .key-input:focus{outline:none;border-color:var(--cyan);}
   .mode-select{background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:10px 13px;border-radius:9px;font-size:12px;font-family:'Chakra Petch',monospace;min-width:160px;}
@@ -167,8 +168,9 @@
 
 <div class="wrap">
   <div class="bar">
-    <input class="key-input" type="password" id="accessToken" placeholder="🔐 輸入存取密碼（Worker 環境變數設定的）">
-    <button class="btn ghost" id="tokenSave" style="padding:11px 18px">儲存密碼</button>
+    <input class="key-input login-user" id="loginUser" autocomplete="username" placeholder="管理員帳號">
+    <input class="key-input" type="password" id="loginPass" autocomplete="current-password" placeholder="管理員密碼">
+    <button class="btn ghost" id="tokenSave" style="padding:11px 18px">登入</button>
     <select class="mode-select" id="analysisMode" title="AI 分析模式">
       <option value="lite">省 token：5位一輪</option>
       <option value="standard" selected>標準：9位一輪</option>
@@ -588,7 +590,7 @@ function agentRolePrompt(a){
     `必須完全堅守你的流派視角，不可給跨領域的籠統答案。`;
 }
 const labelMap={buy:'買入',sell:'賣出',hold:'觀望'};
-let ACCESS_TOKEN=localStorage.getItem('accessToken')||'',MODEL='llama-3.1-8b-instant';
+let ACCESS_TOKEN=localStorage.getItem('sessionToken')||localStorage.getItem('accessToken')||'',MODEL='llama-3.1-8b-instant';
 let MKT=[],SCREENED={},R1={},R2={},curCoin=null, MARKET_CONTEXT=null;
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -1013,6 +1015,9 @@ function connectChartWS(){
   CHART_WS_MANUAL=false;
   const stream=`${pair.toLowerCase()}@kline_${interval}`;
   CHART_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${stream}`);
+  CHART_WS.onopen=()=>{
+    if($('modalChartMeta')) $('modalChartMeta').textContent=`${interval} · WS 即時K線已連線`;
+  };
   CHART_WS.onmessage=(event)=>{
     try{
       const msg=JSON.parse(event.data);
@@ -1033,10 +1038,12 @@ function connectChartWS(){
     }catch(e){}
   };
   CHART_WS.onclose=()=>{
+    if($('modalChartMeta')&&!CHART_WS_MANUAL) $('modalChartMeta').textContent=`${interval} · K線WS重連中...`;
     if(!CHART_WS_MANUAL&&$('klineModal')?.classList.contains('show')){
       setTimeout(connectChartWS,1800);
     }
   };
+  CHART_WS.onerror=()=>{ try{CHART_WS.close();}catch(e){} };
 }
 
 function closeChartWS(){
@@ -2189,14 +2196,48 @@ loadRecs();
 loadWatchlist();
 loadTradedSymbols();
 
-// 存取密碼
-$('accessToken').value=ACCESS_TOKEN;
-$('tokenSave').addEventListener('click',()=>{
-  ACCESS_TOKEN=$('accessToken').value.trim();
-  try{ localStorage.setItem('accessToken',ACCESS_TOKEN); }catch(e){}
-  flash(ACCESS_TOKEN?'✓ 密碼已儲存':'⚠ 密碼已清空','ok');
-  if(ACCESS_TOKEN){ loadRecs(); loadWatchlist(); loadTradedSymbols(); }
-});
+// 單管理員登入
+$('loginUser').value=localStorage.getItem('adminUser')||'admin';
+if(ACCESS_TOKEN){
+  $('tokenSave').textContent='已登入';
+  $('loginPass').placeholder='已登入，重新輸入密碼可換 session';
+}
+$('tokenSave').addEventListener('click',loginAdmin);
+$('loginPass').addEventListener('keydown',e=>{ if(e.key==='Enter') loginAdmin(); });
+async function loginAdmin(){
+  const username=$('loginUser').value.trim()||'admin';
+  const password=$('loginPass').value;
+  if(!password&&ACCESS_TOKEN){
+    flash('目前已登入','ok');
+    return;
+  }
+  if(!password){ flash('請輸入管理員密碼','err'); return; }
+  $('tokenSave').disabled=true;
+  $('tokenSave').textContent='登入中...';
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username,password})
+    });
+    const d=await res.json();
+    if(!res.ok||!d.token) throw new Error(d.error||'登入失敗');
+    ACCESS_TOKEN=d.token;
+    localStorage.setItem('sessionToken',ACCESS_TOKEN);
+    localStorage.setItem('adminUser',username);
+    localStorage.removeItem('accessToken');
+    $('loginPass').value='';
+    $('loginPass').placeholder='已登入，重新輸入密碼可換 session';
+    $('tokenSave').textContent='已登入';
+    flash('✓ 管理員登入成功','ok');
+    loadRecs(); loadWatchlist(); loadTradedSymbols();
+  }catch(e){
+    flash('登入失敗：'+e.message,'err');
+    $('tokenSave').textContent='登入';
+  }finally{
+    $('tokenSave').disabled=false;
+  }
+}
 $('watchAdd').addEventListener('click',async()=>{
   const sym=$('watchSymbol').value;
   const note=$('watchNote').value;
@@ -2221,29 +2262,39 @@ let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 function connectPriceWS(){
   closePriceWS();
   const pairs=[...new Set(MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase()))];
-  if(pairs.length===0) return;
+  if(pairs.length===0){
+    if($('liveText')) $('liveText').textContent='WebSocket 等待掃描清單';
+    return;
+  }
   PRICE_WS_MANUAL=false;
-  const streams=pairs.map(p=>`${p}@markPrice@1s`).join('/');
+  const streams=pairs.map(p=>`${p}@ticker`).join('/');
   PRICE_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
   PRICE_WS.onopen=()=>{
-    if($('liveText')) $('liveText').textContent=`WebSocket 即時跳動 · ${pairs.length} 幣`;
+    if($('liveText')) $('liveText').textContent=`WS 已連線 · ${pairs.length} 幣 · `+new Date().toLocaleTimeString('zh-TW',{hour12:false});
   };
   PRICE_WS.onmessage=(event)=>{
     try{
       const msg=JSON.parse(event.data);
       const d=msg.data||{};
       const sym=String(d.s||'').replace('USDT','');
-      const price=Number(d.p);
-      if(sym&&Number.isFinite(price)) updateLivePrice(sym,price);
+      const price=Number(d.c);
+      if(sym&&Number.isFinite(price)){
+        updateLivePrice(sym,price);
+        updateLiveChange(sym,Number(d.P));
+      }
     }catch(e){}
   };
   PRICE_WS.onclose=()=>{
+    if($('liveText')) $('liveText').textContent='WS 斷線，準備重連...';
     if(!PRICE_WS_MANUAL&&liveOn){
       clearTimeout(PRICE_WS_TIMER);
       PRICE_WS_TIMER=setTimeout(connectPriceWS,2200);
     }
   };
-  PRICE_WS.onerror=()=>{ try{PRICE_WS.close();}catch(e){} };
+  PRICE_WS.onerror=()=>{
+    if($('liveText')) $('liveText').textContent='WS 錯誤，使用 REST 備援';
+    try{PRICE_WS.close();}catch(e){}
+  };
 }
 
 function closePriceWS(){
@@ -2273,6 +2324,17 @@ function updateLivePrice(sym,price){
     lastRecRenderAt=Date.now();
   }
   if($('liveText')) $('liveText').textContent='WebSocket 即時跳動 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+}
+
+function updateLiveChange(sym,chg24){
+  if(!Number.isFinite(chg24)) return;
+  document.querySelectorAll(`[data-chg-sym="${sym}"]`).forEach(el=>{
+    el.textContent=(chg24>0?'+':'')+chg24.toFixed(2)+'%';
+    el.className='chip '+(chg24>=0?'chg-up':'chg-dn');
+    el.setAttribute('data-chg-sym',sym);
+  });
+  const idx=MKT.findIndex(x=>x.sym===sym);
+  if(idx>=0) MKT[idx].chg24=+chg24.toFixed(2);
 }
 
 // 輕量：只更新已顯示幣的價格與漲跌
@@ -2317,7 +2379,9 @@ async function tickPrices(){
       lastChartRefresh=Date.now();
       if($('klineModal')?.classList.contains('show')) loadModalChart(true);
     }
-  }catch(e){ /* 靜默，下次再試 */ }
+  }catch(e){
+    if($('liveText')&&liveOn&&!PRICE_WS) $('liveText').textContent='REST 備援失敗，等待下次更新';
+  }
 }
 
 // 重：完整重新掃描（重排篩選清單）
