@@ -49,6 +49,9 @@
   .seg-btn{font-family:'Chakra Petch',monospace;font-size:10px;padding:4px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel-2);color:var(--dim);cursor:pointer;}
   .seg-btn.active.long{border-color:var(--green);color:var(--green);background:rgba(43,217,122,.08);}
   .seg-btn.active.short{border-color:var(--red);color:var(--red);background:rgba(255,77,94,.08);}
+  .scroll-list{max-height:522px;overflow-y:auto;scrollbar-color:var(--line) var(--panel);scrollbar-width:thin;}
+  .scroll-list::-webkit-scrollbar{width:7px;}
+  .scroll-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:999px;}
 
   .coin{padding:11px 15px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .15s;display:flex;flex-direction:column;gap:5px;}
   .coin:last-child{border-bottom:none;}
@@ -100,6 +103,9 @@
   .progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .25s ease;}
   .rec-card{background:linear-gradient(180deg,rgba(17,21,31,.72),rgba(13,17,25,.9));}
   .rec-card.open{background:linear-gradient(180deg,rgba(54,226,226,.06),rgba(13,17,25,.94));box-shadow:inset 3px 0 0 var(--cyan);}
+  .rec-tabs{display:flex;gap:6px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel-2);}
+  .rec-tab{font-family:'Chakra Petch',monospace;font-size:11px;padding:6px 10px;border-radius:7px;border:1px solid var(--line);background:var(--panel);color:var(--dim);cursor:pointer;}
+  .rec-tab.active{border-color:var(--cyan);color:var(--cyan);background:rgba(54,226,226,.08);}
   .rec-head{transition:background .15s;}
   .rec-head:hover{background:rgba(255,255,255,.025);}
   .rec-detail-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:10px;}
@@ -202,7 +208,7 @@
       </div>
       <div class="col all">
         <div class="col-head">◎ 掃描幣種清單 <span class="cnt" id="cntAll">0</span></div>
-        <div id="listAllCoins"></div>
+        <div id="listAllCoins" class="scroll-list"></div>
       </div>
       <div class="col alert">
         <div class="col-head">⚡ 持倉異常警報 <span class="cnt" id="cntAlert">0</span></div>
@@ -1666,6 +1672,7 @@ let WATCHLIST=[];
 let TRADED_SYMBOLS=[];
 const OPEN_REC_IDS=new Set();
 let REPORT_PERIOD=Number(localStorage.getItem('reportPeriod')||7);
+let REC_TAB=localStorage.getItem('recTab')||'all';
 let recSyncBusy=false;
 async function saveRec(rec){
   if(!ACCESS_TOKEN) return;
@@ -1976,11 +1983,20 @@ function renderRecs(){
   const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c.price);
   refreshRecsWithPrices(priceMap);
   let wins=0,total=0;
-  const cards=RECS.map(rec=>{
+  const recRows=RECS.map(rec=>{
     const cur=priceMap[rec.sym];
     const st=recStatus(rec,cur);
     if(st.state==='已止盈'){wins++;total++;}
     else if(st.state==='已止損'){total++;}
+    return {rec,cur,st};
+  });
+  const filteredRows=recRows.filter(({st})=>{
+    if(REC_TAB==='running') return st.state==='進行中'||st.state==='—';
+    if(REC_TAB==='tp') return st.state==='已止盈';
+    if(REC_TAB==='sl') return st.state==='已止損';
+    return true;
+  });
+  const cards=filteredRows.map(({rec,cur,st})=>{
     const dir=rec.verdict==='buy'?'多':'空';
     const dirColor=rec.verdict==='buy'?'var(--green)':'var(--red)';
     const t=new Date(rec.time).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
@@ -2002,10 +2018,21 @@ function renderRecs(){
     </div>`;
   }).join('');
   const winRate=total>0?Math.round(wins/total*100):'—';
-  $('recsStat').textContent=`已結算 ${total} 筆 · 勝率 ${winRate}${total>0?'%':''}`;
+  const tabLabel={all:'全部清單',running:'進行中',tp:'已止盈',sl:'已止損'}[REC_TAB]||'全部清單';
+  $('recsStat').textContent=`${tabLabel} ${filteredRows.length} 筆 · 已結算 ${total} 筆 · 勝率 ${winRate}${total>0?'%':''}`;
   if($('recsUpdatedAt')) $('recsUpdatedAt').textContent='即時更新 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
-  box.innerHTML=renderMemoryPanel()+`<div style="font-family:'Chakra Petch',monospace;font-size:12px">${cards}</div>`;
+  box.innerHTML=renderRecTabs()+renderMemoryPanel()+`<div style="font-family:'Chakra Petch',monospace;font-size:12px">${cards||'<div style="padding:18px;text-align:center;color:var(--dimmer);font-size:12px">此分頁目前沒有記錄。</div>'}</div>`;
   bindRecCardEvents();
+}
+
+function renderRecTabs(){
+  const rows=[
+    ['all','全部清單'],
+    ['running','進行中'],
+    ['tp','已止盈'],
+    ['sl','已止損']
+  ];
+  return `<div class="rec-tabs">${rows.map(([id,label])=>`<button class="rec-tab ${REC_TAB===id?'active':''}" data-rec-tab="${id}">${label}</button>`).join('')}</div>`;
 }
 
 function renderRecDetail(rec){
@@ -2041,6 +2068,13 @@ function renderRecDetail(rec){
 }
 
 function bindRecCardEvents(){
+  document.querySelectorAll('[data-rec-tab]').forEach(btn=>{
+    btn.onclick=()=>{
+      REC_TAB=btn.getAttribute('data-rec-tab')||'all';
+      try{localStorage.setItem('recTab',REC_TAB);}catch(e){}
+      renderRecs();
+    };
+  });
   document.querySelectorAll('.rec-head').forEach(head=>{
     head.addEventListener('click',()=>{
       const card=head.closest('.rec-card');
