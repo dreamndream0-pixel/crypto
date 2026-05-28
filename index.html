@@ -192,7 +192,7 @@
     <div class="stage-label" style="display:flex;align-items:center;gap:12px">
       <span>全市場掃描 · 自動篩選</span>
       <span id="liveStatus" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--green)">
-        <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite"></span>
+        <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 8px var(--green)"></span>
         <span id="liveText">即時更新中</span>
       </span>
     </div>
@@ -982,7 +982,7 @@ function renderAllCoinList(){
 }
 
 const KLINE_CACHE=new Map();
-let CURRENT_CHART={sym:null,pair:null,interval:'5m',synthetic:false,rows:[]};
+let CURRENT_CHART={sym:null,pair:null,interval:'5m',synthetic:false,rows:[],view:{offset:0,visible:90},drag:null};
 
 function isSyntheticInterval(interval){
   return interval==='1s'||interval==='30s';
@@ -1008,7 +1008,7 @@ function intervalMs(interval){
   if(interval==='1M') return 2592000000;
   return 60000;
 }
-let PRICE_WS=null,PRICE_WS_TIMER=null,PRICE_WS_MANUAL=false;
+let PRICE_WS=null,PRICE_WS_TIMER=null,PRICE_WS_MANUAL=false,PRICE_WS_KEY='';
 let CHART_WS=null,CHART_WS_MANUAL=false;
 let lastRecRenderAt=0;
 
@@ -1034,9 +1034,10 @@ async function fetchKlines(pair,interval='5m',limit=80){
 }
 
 async function openKlineModal(sym,pair,interval='5m'){
-  CURRENT_CHART={sym,pair:pair||`${sym}USDT`,interval,synthetic:isSyntheticInterval(interval),rows:[]};
+  CURRENT_CHART={sym,pair:pair||`${sym}USDT`,interval,synthetic:isSyntheticInterval(interval),rows:[],view:{offset:0,visible:90},drag:null};
   $('modalChartTitle').textContent=`${sym} / USDT 即時K線`;
   $('klineModal').classList.add('show');
+  setupKlineInteractions();
   document.querySelectorAll('[data-modal-interval]').forEach(btn=>{
     btn.classList.toggle('active',btn.getAttribute('data-modal-interval')===interval);
   });
@@ -1057,20 +1058,23 @@ async function loadModalChart(force=false){
   try{
     if(meta) meta.textContent=`${interval} 載入中...`;
     if(isSyntheticInterval(interval)){
-      const seed=await fetchKlines(pair,'1m',30);
+      const seed=await fetchKlines(pair,'1m',180);
       const now=Date.now();
       const basePrice=seed.at(-1)?.close||MKT.find(c=>c.sym===sym)?.price||0;
       const step=intervalMs(interval);
-      const count=interval==='1s'?60:80;
+      const count=interval==='1s'?180:240;
+      const source=seed.length?seed:[{time:now,open:basePrice,high:basePrice,low:basePrice,close:basePrice,volume:0}];
       CURRENT_CHART.rows=Array.from({length:count},(_,i)=>{
         const time=Math.floor((now-(count-i)*step)/step)*step;
-        return {time,open:basePrice,high:basePrice,low:basePrice,close:basePrice,volume:0};
+        const ref=source[Math.min(source.length-1,Math.floor(i/count*source.length))]||source.at(-1);
+        const price=Number(ref?.close||basePrice);
+        return {time,open:price,high:price,low:price,close:price,volume:0};
       });
       drawKline(canvas,CURRENT_CHART.rows,{sym,interval});
       return;
     }
-    if(force) KLINE_CACHE.delete(`${pair}:${interval}:80`);
-    const rows=await fetchKlines(pair,interval,80);
+    if(force) KLINE_CACHE.delete(`${pair}:${interval}:300`);
+    const rows=await fetchKlines(pair,interval,300);
     CURRENT_CHART.rows=rows;
     drawKline(canvas,rows,{sym,interval});
   }catch(e){
@@ -1107,9 +1111,9 @@ function connectChartWS(){
       const last=rows[rows.length-1];
       if(last&&last.time===row.time) rows[rows.length-1]=row;
       else rows.push(row);
-      CURRENT_CHART.rows=rows.slice(-80);
+      CURRENT_CHART.rows=rows.slice(-500);
       updateLivePrice(sym,row.close);
-      if(!CURRENT_CHART.lastDraw||Date.now()-CURRENT_CHART.lastDraw>=900){
+      if(!CURRENT_CHART.lastDraw||Date.now()-CURRENT_CHART.lastDraw>=160){
         CURRENT_CHART.lastDraw=Date.now();
         drawKline($('modalChartCanvas'),CURRENT_CHART.rows,{sym,interval});
       }
@@ -1136,6 +1140,16 @@ function updateSyntheticCandle(sym,interval,price,qty,ts){
   let rows=Array.isArray(CURRENT_CHART.rows)?CURRENT_CHART.rows:[];
   let last=rows[rows.length-1];
   if(!last||last.time!==bucket){
+    if(last&&bucket>last.time+step){
+      let t=last.time+step;
+      let guard=0;
+      while(t<bucket&&guard<120){
+        rows.push({time:t,open:last.close,high:last.close,low:last.close,close:last.close,volume:0});
+        last=rows[rows.length-1];
+        t+=step;
+        guard++;
+      }
+    }
     rows.push({time:bucket,open:last?last.close:price,high:price,low:price,close:price,volume:qty||0});
   }else{
     last.high=Math.max(last.high,price);
@@ -1143,7 +1157,7 @@ function updateSyntheticCandle(sym,interval,price,qty,ts){
     last.close=price;
     last.volume=(last.volume||0)+(qty||0);
   }
-  CURRENT_CHART.rows=rows.slice(-80);
+  CURRENT_CHART.rows=rows.slice(-500);
   updateLivePrice(sym,price);
   if(!CURRENT_CHART.lastDraw||Date.now()-CURRENT_CHART.lastDraw>=180){
     CURRENT_CHART.lastDraw=Date.now();
@@ -1155,6 +1169,15 @@ function drawKline(canvas,rows,{sym,interval}={}){
   if(!canvas||!rows||rows.length<5) return;
   rows=rows.filter(r=>Number.isFinite(r.open)&&Number.isFinite(r.high)&&Number.isFinite(r.low)&&Number.isFinite(r.close));
   if(rows.length<5) return;
+  if(canvas.id==='modalChartCanvas'){
+    if(!CURRENT_CHART.view) CURRENT_CHART.view={offset:0,visible:90};
+    const view=CURRENT_CHART.view;
+    view.visible=Math.max(18,Math.min(rows.length,Math.round(view.visible||90)));
+    view.offset=Math.max(0,Math.min(rows.length-view.visible,Math.round(view.offset||0)));
+    const end=rows.length-view.offset;
+    const start=Math.max(0,end-view.visible);
+    rows=rows.slice(start,end);
+  }
   const box=canvas.closest('.kline-box');
   const meta=box?.querySelector('.kline-meta');
   const rect=canvas.getBoundingClientRect();
@@ -1217,10 +1240,62 @@ function drawKline(canvas,rows,{sym,interval}={}){
   ctx.fillText(new Date(rows[0].time).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false}),pad.l,h-10);
   ctx.textAlign='right';
   ctx.fillText(new Date(last.time).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false}),w-pad.r,h-10);
-  if(meta){
-    const color=chg>=0?'var(--green)':'var(--red)';
-    meta.innerHTML=`${interval} · 最新 $${formatPrice(last.close)} · <span style="color:${color}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>`;
-  }
+	  if(meta){
+	    const color=chg>=0?'var(--green)':'var(--red)';
+	    meta.innerHTML=`${interval} · 最新 $${formatPrice(last.close)} · <span style="color:${color}">${chg>=0?'+':''}${chg.toFixed(2)}%</span> · 滾輪縮放 / 拖曳滑動`;
+	  }
+	}
+
+function redrawCurrentChart(){
+  if(!CURRENT_CHART?.sym||!Array.isArray(CURRENT_CHART.rows)) return;
+  drawKline($('modalChartCanvas'),CURRENT_CHART.rows,{sym:CURRENT_CHART.sym,interval:CURRENT_CHART.interval});
+}
+
+function setupKlineInteractions(){
+  const canvas=$('modalChartCanvas');
+  if(!canvas||canvas.dataset.interactionsReady) return;
+  canvas.dataset.interactionsReady='1';
+  canvas.addEventListener('wheel',(e)=>{
+    if(!$('klineModal')?.classList.contains('show')) return;
+    const rows=CURRENT_CHART.rows||[];
+    if(rows.length<10) return;
+    e.preventDefault();
+    if(!CURRENT_CHART.view) CURRENT_CHART.view={offset:0,visible:90};
+    const view=CURRENT_CHART.view;
+    const oldVisible=view.visible||90;
+    const factor=e.deltaY>0?1.14:.86;
+    view.visible=Math.max(18,Math.min(rows.length,Math.round(oldVisible*factor)));
+    view.offset=Math.max(0,Math.min(rows.length-view.visible,view.offset||0));
+    redrawCurrentChart();
+  },{passive:false});
+  canvas.addEventListener('mousedown',(e)=>{
+    const rows=CURRENT_CHART.rows||[];
+    if(rows.length<10) return;
+    if(!CURRENT_CHART.view) CURRENT_CHART.view={offset:0,visible:90};
+    CURRENT_CHART.drag={x:e.clientX,offset:CURRENT_CHART.view.offset||0};
+    canvas.style.cursor='grabbing';
+  });
+  window.addEventListener('mousemove',(e)=>{
+    if(!CURRENT_CHART.drag) return;
+    const rows=CURRENT_CHART.rows||[];
+    const view=CURRENT_CHART.view||{offset:0,visible:90};
+    const rect=canvas.getBoundingClientRect();
+    const candleW=Math.max(3,(rect.width-66)/Math.max(1,view.visible||90));
+    const delta=Math.round((CURRENT_CHART.drag.x-e.clientX)/candleW);
+    view.offset=Math.max(0,Math.min(rows.length-(view.visible||90),CURRENT_CHART.drag.offset+delta));
+    CURRENT_CHART.view=view;
+    redrawCurrentChart();
+  });
+  window.addEventListener('mouseup',()=>{
+    if(CURRENT_CHART.drag){
+      CURRENT_CHART.drag=null;
+      canvas.style.cursor='';
+    }
+  });
+  canvas.addEventListener('dblclick',()=>{
+    CURRENT_CHART.view={offset:0,visible:90};
+    redrawCurrentChart();
+  });
 }
 
 function formatPrice(n){
@@ -2333,26 +2408,28 @@ function setLiveText(text){
 }
 
 function connectPriceWS(mode='combined'){
-  closePriceWS();
   const pairs=[...new Set(MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase()))];
   if(pairs.length===0){
     setLiveText('等待掃描清單');
     return;
   }
-  PRICE_WS_MANUAL=false;
-  wsMode=mode;
-  lastWsTickAt=0;
   const streams=pairs.flatMap(p=>[`${p}@aggTrade`,`${p}@ticker`]).join('/');
-  const url=mode==='all'
-    ? 'wss://fstream.binance.com/ws/!ticker@arr'
-    : `wss://fstream.binance.com/stream?streams=${streams}`;
+  const streamKey=`combined:${streams}`;
+  if(PRICE_WS&&PRICE_WS_KEY===streamKey&&(PRICE_WS.readyState===WebSocket.OPEN||PRICE_WS.readyState===WebSocket.CONNECTING)){
+    return;
+  }
+  closePriceWS();
+  PRICE_WS_MANUAL=false;
+  wsMode='combined';
+  lastWsTickAt=0;
+  PRICE_WS_KEY=streamKey;
+  const url=`wss://fstream.binance.com/stream?streams=${streams}`;
   PRICE_WS=new WebSocket(url);
   PRICE_WS.onopen=()=>{
-    setLiveText(`WS 即時連線 · ${mode==='all'?'全市場Ticker備援':'成交流'} · ${pairs.length} 幣`);
+    setLiveText(`WS 成交流推送 · ${pairs.length} 幣`);
     setTimeout(()=>{
       if(liveOn&&PRICE_WS&&lastWsTickAt===0&&mode==='combined'){
-        setLiveText('WS 切換全市場串流');
-        connectPriceWS('all');
+        setLiveText(`WS 成交流等待中 · ${pairs.length} 幣`);
       }
     },4500);
   };
@@ -2373,11 +2450,7 @@ function connectPriceWS(mode='combined'){
           return;
         }
         if(d.e==='24hrTicker'||d.c!==undefined){
-          const price=Number(d.c);
           updateLiveChange(sym,Number(d.P));
-          if(Number.isFinite(price)&&(!lastTradeTicks[sym]||Date.now()-lastTradeTicks[sym]>2500)){
-            updateLivePrice(sym,price,mode==='all'?'Ticker備援':'Ticker校準');
-          }
         }
       });
     }catch(e){}
@@ -2386,11 +2459,11 @@ function connectPriceWS(mode='combined'){
     if(!PRICE_WS_MANUAL&&liveOn){
       setLiveText('WS 重連中');
       clearTimeout(PRICE_WS_TIMER);
-      PRICE_WS_TIMER=setTimeout(()=>connectPriceWS(wsMode==='combined'?'all':'combined'),2200);
+      PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined'),2200);
     }
   };
   PRICE_WS.onerror=()=>{
-    setLiveText('WS 錯誤 · REST 備援');
+    setLiveText('WS 錯誤 · 重連中');
     try{PRICE_WS.close();}catch(e){}
   };
 }
@@ -2406,6 +2479,7 @@ function closePriceWS(){
     }catch(e){}
   }
   PRICE_WS=null;
+  PRICE_WS_KEY='';
 }
 
 function updateLivePrice(sym,price,source='WS'){
@@ -2440,58 +2514,17 @@ function updateLiveChange(sym,chg24){
   if(idx>=0) MKT[idx].chg24=+chg24.toFixed(2);
 }
 
-// 輕量：REST 備援校準；WS 沒跳時每秒補價格
+// 輕量：只監控成交流連線；價格不再用 REST/ticker 覆蓋，避免狀態與價格跳回舊模式
 async function tickPrices(){
   if(document.hidden) return; // 分頁在背景時跳過，省請求
   try{
-    if(liveOn&&(!PRICE_WS||Date.now()-lastWsTickAt>3500)){
-      const d=await fetchLivePrices();
-      Object.entries(d.prices||{}).forEach(([sym,price])=>{
-        if(Number.isFinite(Number(price))) updateLivePrice(sym,Number(price),'REST備援');
-      });
-      if(!PRICE_WS) setLiveText('REST 備援連線中');
+    if(liveOn&&(!PRICE_WS||PRICE_WS.readyState===WebSocket.CLOSED||Date.now()-lastWsTickAt>12000)){
+      if(!PRICE_WS||PRICE_WS.readyState===WebSocket.CLOSED) setLiveText('WS 重連中');
+      connectPriceWS('combined');
       return;
     }
-    const market=await fetchMarket();
-    const map={};
-    market.forEach(c=>map[c.symbol]=c);
-    // 更新所有畫面上的價格元素
-    document.querySelectorAll('[data-price-sym]').forEach(el=>{
-      const sym=el.getAttribute('data-price-sym');
-      const c=map[sym];
-      if(!c) return;
-      const old=lastPrices[sym];
-      el.textContent='$'+c.price;
-      if(old!==undefined && c.price!==old){
-        el.classList.remove('flash-up','flash-dn');
-        void el.offsetWidth; // 重置動畫
-        el.classList.add(c.price>old?'flash-up':'flash-dn');
-      }
-      lastPrices[sym]=c.price;
-    });
-    // 更新漲跌幅
-    document.querySelectorAll('[data-chg-sym]').forEach(el=>{
-      const sym=el.getAttribute('data-chg-sym');
-      const c=map[sym];
-      if(!c) return;
-      el.textContent=(c.chg24>0?'+':'')+c.chg24+'%';
-      el.className='chip '+(c.chg24>=0?'chg-up':'chg-dn');
-      el.setAttribute('data-chg-sym',sym);
-    });
-    if(!PRICE_WS) setLiveText('REST 備援連線中');
-    // 用最新價更新 MKT 價格，順便刷新戰績損益
-    market.forEach(c=>{ const idx=MKT.findIndex(x=>x.sym===c.symbol); if(idx>=0) MKT[idx].price=c.price; });
-    if(RECS.length>0){
-      const priceMap={};market.forEach(c=>priceMap[c.symbol]=c.price);
-      refreshRecsWithPrices(priceMap,{sync:true});
-      renderRecs();
-    }
-    if(Date.now()-lastChartRefresh>30000){
-      lastChartRefresh=Date.now();
-      if($('klineModal')?.classList.contains('show')) loadModalChart(true);
-    }
   }catch(e){
-    if(liveOn&&!PRICE_WS) setLiveText('REST 備援等待中');
+    if(liveOn) setLiveText('WS 等待重連');
   }
 }
 
@@ -2547,6 +2580,7 @@ document.querySelectorAll('[data-modal-interval]').forEach(btn=>{
     CURRENT_CHART.synthetic=isSyntheticInterval(CURRENT_CHART.interval);
     CURRENT_CHART.rows=[];
     CURRENT_CHART.lastDraw=0;
+    CURRENT_CHART.view={offset:0,visible:90};
     document.querySelectorAll('[data-modal-interval]').forEach(x=>x.classList.toggle('active',x===btn));
     loadModalChart(true).then(connectChartWS);
   });
