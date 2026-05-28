@@ -322,6 +322,12 @@ async function fetchMarket(){
   return data.market; // [{symbol,pair,price,chg24,volUSDT,high24,low24,funding}]
 }
 
+async function fetchLivePrices(){
+  const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=prices&_='+Date.now(),{cache:'no-store'});
+  if(!res.ok) throw new Error('即時價格回應錯誤 '+res.status);
+  return await res.json();
+}
+
 async function fetchMarketContext(){
   try{
     const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=context');
@@ -2237,10 +2243,10 @@ function flash(msg,type){
 }
 
 // ---------- 即時更新 ----------
-let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0;
+let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0, lastWsTickAt=0, wsMode='combined';
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 
-function connectPriceWS(){
+function connectPriceWS(mode='combined'){
   closePriceWS();
   const pairs=[...new Set(MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase()))];
   if(pairs.length===0){
@@ -2248,28 +2254,42 @@ function connectPriceWS(){
     return;
   }
   PRICE_WS_MANUAL=false;
+  wsMode=mode;
+  lastWsTickAt=0;
   const streams=pairs.map(p=>`${p}@ticker`).join('/');
-  PRICE_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
+  const url=mode==='all'
+    ? 'wss://fstream.binance.com/ws/!ticker@arr'
+    : `wss://fstream.binance.com/stream?streams=${streams}`;
+  PRICE_WS=new WebSocket(url);
   PRICE_WS.onopen=()=>{
-    if($('liveText')) $('liveText').textContent=`WS 已連線 · ${pairs.length} 幣 · `+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+    if($('liveText')) $('liveText').textContent=`WS 已連線(${mode==='all'?'全市場':'清單'}) · ${pairs.length} 幣 · `+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+    setTimeout(()=>{
+      if(liveOn&&PRICE_WS&&lastWsTickAt===0&&mode==='combined'){
+        if($('liveText')) $('liveText').textContent='WS 清單無資料，切換全市場串流...';
+        connectPriceWS('all');
+      }
+    },4500);
   };
   PRICE_WS.onmessage=(event)=>{
     try{
       const msg=JSON.parse(event.data);
-      const d=msg.data||{};
-      const sym=String(d.s||'').replace('USDT','');
-      const price=Number(d.c);
-      if(sym&&Number.isFinite(price)){
-        updateLivePrice(sym,price);
-        updateLiveChange(sym,Number(d.P));
-      }
+      const payload=Array.isArray(msg)?msg:(Array.isArray(msg.data)?msg.data:[msg.data||msg]);
+      lastWsTickAt=Date.now();
+      payload.forEach(d=>{
+        const sym=String(d.s||'').replace('USDT','');
+        const price=Number(d.c);
+        if(sym&&Number.isFinite(price)){
+          updateLivePrice(sym,price,'WS');
+          updateLiveChange(sym,Number(d.P));
+        }
+      });
     }catch(e){}
   };
   PRICE_WS.onclose=()=>{
     if($('liveText')) $('liveText').textContent='WS 斷線，準備重連...';
     if(!PRICE_WS_MANUAL&&liveOn){
       clearTimeout(PRICE_WS_TIMER);
-      PRICE_WS_TIMER=setTimeout(connectPriceWS,2200);
+      PRICE_WS_TIMER=setTimeout(()=>connectPriceWS(wsMode==='combined'?'all':'combined'),2200);
     }
   };
   PRICE_WS.onerror=()=>{
@@ -2285,7 +2305,7 @@ function closePriceWS(){
   PRICE_WS=null;
 }
 
-function updateLivePrice(sym,price){
+function updateLivePrice(sym,price,source='WS'){
   const old=lastPrices[sym];
   document.querySelectorAll(`[data-price-sym="${sym}"]`).forEach(el=>{
     el.textContent='$'+formatPrice(price);
@@ -2304,7 +2324,7 @@ function updateLivePrice(sym,price){
     renderRecs();
     lastRecRenderAt=Date.now();
   }
-  if($('liveText')) $('liveText').textContent='WebSocket 即時跳動 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+  if($('liveText')) $('liveText').textContent=`${source} 即時跳動 · `+new Date().toLocaleTimeString('zh-TW',{hour12:false});
 }
 
 function updateLiveChange(sym,chg24){
@@ -2318,10 +2338,18 @@ function updateLiveChange(sym,chg24){
   if(idx>=0) MKT[idx].chg24=+chg24.toFixed(2);
 }
 
-// 輕量：只更新已顯示幣的價格與漲跌
+// 輕量：REST 備援校準；WS 沒跳時每秒補價格
 async function tickPrices(){
   if(document.hidden) return; // 分頁在背景時跳過，省請求
   try{
+    if(liveOn&&(!PRICE_WS||Date.now()-lastWsTickAt>3500)){
+      const d=await fetchLivePrices();
+      Object.entries(d.prices||{}).forEach(([sym,price])=>{
+        if(Number.isFinite(Number(price))) updateLivePrice(sym,Number(price),'REST備援');
+      });
+      if($('liveText')) $('liveText').textContent='REST 每秒備援 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+      return;
+    }
     const market=await fetchMarket();
     const map={};
     market.forEach(c=>map[c.symbol]=c);
@@ -2372,7 +2400,7 @@ async function tickRescan(){
   await doScan(true); // true = 靜默模式，不改按鈕文字
 }
 
-const PRICE_INTERVAL=15000;     // REST 備援校準；即時價格由 WebSocket 每秒推送
+const PRICE_INTERVAL=1000;      // 每秒檢查 WS；必要時用 REST 即時價格備援
 const RESCAN_INTERVAL=60000;    // 完整掃描每 60 秒
 
 function startLive(){
@@ -2386,7 +2414,7 @@ function startLive(){
   tickPrices();
   priceTimer=setInterval(tickPrices,PRICE_INTERVAL);
   rescanTimer=setInterval(tickRescan,RESCAN_INTERVAL);
-  $('scanStatus').textContent='⚡ 自動模式啟用：WebSocket 每秒跳動，REST 每 15 秒校準，每 60 秒完整重掃';
+  $('scanStatus').textContent='⚡ 自動模式啟用：WebSocket 每秒跳動，WS 無資料時 REST 每秒備援，每 60 秒完整重掃';
 }
 function stopLive(){
   liveOn=false;
@@ -2398,6 +2426,9 @@ function stopLive(){
   $('scanStatus').textContent='';
 }
 $('autoToggle').addEventListener('click',()=>{ liveOn?stopLive():startLive(); });
+setTimeout(()=>{
+  if(!liveOn) startLive();
+},500);
 
 // 分頁切回前景時，若自動開著，立刻更新一次
 document.addEventListener('visibilitychange',()=>{
