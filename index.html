@@ -20,7 +20,7 @@
   .logo{width:31px;height:31px;border-radius:8px;background:linear-gradient(135deg,var(--cyan),var(--green));display:grid;place-items:center;font-weight:900;color:#04140f;font-size:16px;box-shadow:0 0 22px rgba(54,226,226,.35);}
   .brand h1{font-size:15px;font-weight:700;}
   .brand .sub{font-size:9px;color:var(--dim);letter-spacing:2px;}
-  .wrap{max-width:1140px;margin:0 auto;padding:22px;}
+  .wrap{width:min(96vw,1760px);margin:0 auto;padding:22px clamp(16px,2vw,32px);}
 
   .bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:20px;}
   .key-input{flex:1;min-width:200px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:10px 13px;border-radius:9px;font-size:12px;font-family:'Chakra Petch',monospace;}
@@ -91,6 +91,19 @@
   @keyframes flashDn{0%{color:var(--red);text-shadow:0 0 10px var(--red)}100%{}}
   .flash-up{animation:flashUp .8s ease-out;}
   .flash-dn{animation:flashDn .8s ease-out;}
+  .progress{height:5px;width:130px;background:var(--panel);border:1px solid var(--line);border-radius:999px;overflow:hidden;}
+  .progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .25s ease;}
+  .rec-card{background:linear-gradient(180deg,rgba(17,21,31,.72),rgba(13,17,25,.9));}
+  .rec-card.open{background:linear-gradient(180deg,rgba(54,226,226,.06),rgba(13,17,25,.94));box-shadow:inset 3px 0 0 var(--cyan);}
+  .rec-head{transition:background .15s;}
+  .rec-head:hover{background:rgba(255,255,255,.025);}
+  .rec-detail-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:10px;}
+  .rec-info{background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px;}
+  .rec-info .k{font-size:9px;color:var(--dimmer);letter-spacing:1px;margin-bottom:4px;font-family:'Chakra Petch',monospace;}
+  .rec-info .v{font-size:12px;color:var(--text);font-family:'Chakra Petch',monospace;}
+  .rec-votes{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+  @media(max-width:900px){.rec-detail-grid{grid-template-columns:1fr 1fr;}.rec-head{grid-template-columns:1fr 1fr 1fr!important;}}
+  @media(max-width:560px){.rec-detail-grid{grid-template-columns:1fr;}.rec-head{grid-template-columns:1fr 1fr!important;}}
 
   .verdict{margin:0 14px 14px;background:linear-gradient(160deg,var(--panel-2),var(--panel));border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
   .v-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:10px;}
@@ -523,6 +536,12 @@ function updateModeUI(){
   if($('modeHint')) $('modeHint').textContent=`${mode.hint} · 裁決:${provider}`;
   if($('rankLabel')) $('rankLabel').textContent=`Top 3 評選 · ${mode.label}模式 · ${activeAgents().length} 位分析師打分`;
 }
+function setProgress(elId,done,total,label){
+  const pct=total?Math.min(100,Math.round(done/total*100)):0;
+  const el=$(elId);
+  if(!el) return;
+  el.innerHTML=`<span>${esc(label||'進度')} ${pct}%</span><span class="progress"><span class="progress-fill" style="width:${pct}%"></span></span>`;
+}
 function esc(v){
   return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
@@ -823,9 +842,12 @@ async function analyze(sym){
   $('analysisArea').scrollIntoView({behavior:'smooth',block:'start'});
   const dataStr=marketBrief(c);
   try{
+    const totalSteps=agents.length*(mode.secondRound?2:1)+1;
+    let step=0;
+    setProgress('pbStatus',step,totalSteps,'分析');
     // Round 1
     for(const a of agents){
-      $('pbStatus').textContent=`第一輪 · ${a.name}`;
+      setProgress('pbStatus',step,totalSteps,`第一輪 · ${a.name}`);
       const sys=agentRolePrompt(a)+`\n`+
         `回JSON：{"verdict":"buy/sell/hold","confidence":0-100,`+
         `"reason":"繁中2-3句完整推理,必須從你流派角度",`+
@@ -837,13 +859,15 @@ async function analyze(sym){
           dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
         paint(a.id,v,R1[a.id].confidence,R1[a.id].reason,false,{data:R1[a.id].dataUsed,triggers:R1[a.id].triggers});
       }catch(e){R1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paint(a.id,'hold',50,'(分析失敗)',false,null);}
+      step++;
+      setProgress('pbStatus',step,totalSteps,`第一輪完成 ${step}/${totalSteps}`);
       await sleep(400);
     }
     const board=agents.map(a=>`${a.name}:${labelMap[R1[a.id].verdict]}(${R1[a.id].confidence}%)-${R1[a.id].reason}`).join('\n');
     if(mode.secondRound){
       await sleep(500);
       for(const a of agents){
-        $('pbStatus').textContent=`第二輪(看全場) · ${a.name}`;
+        setProgress('pbStatus',step,totalSteps,`第二輪 · ${a.name}`);
         const sys=agentRolePrompt(a)+`\n`+
           `你已看完全場意見,請從你流派角度重新判斷:堅持或修正?`+
           `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,`+
@@ -856,6 +880,8 @@ async function analyze(sym){
             dataUsed:r.dataUsed||R1[a.id].dataUsed,triggers:r.triggers||R1[a.id].triggers};
           paint(a.id,v,R2[a.id].confidence,R2[a.id].reason,ch,{data:R2[a.id].dataUsed,triggers:R2[a.id].triggers});
         }catch(e){R2[a.id]={...R1[a.id],changed:false};}
+        step++;
+        setProgress('pbStatus',step,totalSteps,`第二輪完成 ${step}/${totalSteps}`);
         await sleep(400);
       }
     }else{
@@ -863,7 +889,7 @@ async function analyze(sym){
     }
     // Verdict
     await sleep(500);
-    $('pbStatus').textContent='總指揮裁決中...';
+    setProgress('pbStatus',step,totalSteps,'總指揮裁決');
     const cnt={buy:0,sell:0,hold:0};agents.forEach(a=>cnt[R2[a.id].verdict]++);
     const board2=agents.map(a=>`${a.name}:${labelMap[R2[a.id].verdict]}(${R2[a.id].confidence}%)-${R2[a.id].reason}`).join('\n');
     const sys=`你是分析師軍團總指揮(資深基金經理)。綜合9位討論後意見做裁決,並給出完整交易計畫。`+
@@ -879,7 +905,7 @@ async function analyze(sym){
     $('vPos').textContent=r.position||'—';$('vConf').textContent=(r.confidence||'—')+'%';
     $('vTally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
     $('vSum').innerHTML=renderPlan(r,c.price,sym,buildAnalysisMemory(sym,c,agents,R2,cnt,mode))+esc(r.summary||'—');
-    $('pbStatus').textContent='✓ 完成';
+    setProgress('pbStatus',totalSteps,totalSteps,'完成');
   }catch(e){$('errBox').style.display='block';$('errBox').textContent=e.message;$('pbStatus').textContent='✗ 錯誤';}
 }
 
@@ -1065,9 +1091,12 @@ async function rankTop3(){
   const scores={}; symbols.forEach(s=>scores[s]={sum:0,wsum:0,votes:[]});
 
   try{
+  const totalSteps=agents.length+1;
+  let step=0;
+  setProgress('rankStatus',step,totalSteps,'評選');
   // 階段一：每位分析師對全候選池評分（勝率角度）
   for(const a of agents){
-    $('rankStatus').textContent=`${a.name} 評分中...`;
+    setProgress('rankStatus',step,totalSteps,`${a.name} 評分`);
     const sys=agentRolePrompt(a)+`\n`+
       `從你的流派角度，為每支候選幣評「勝率分數」(0-100)：越符合你流派的進場條件、訊號越明確、風險報酬比越好，分數越高。`+
       `只回JSON:{"scores":{"幣代號":分數,...},"selfConf":你對自己這次評分的信心0-100}。所有候選幣都要給分。`;
@@ -1080,6 +1109,8 @@ async function rankTop3(){
         scores[s].sum+=sc; scores[s].wsum+=sc*w; scores[s].votes.push({agent:a.name,score:sc});
       });
     }catch(e){ symbols.forEach(s=>{scores[s].sum+=50;scores[s].wsum+=50*0.6;scores[s].votes.push({agent:a.name,score:50});}); }
+    step++;
+    setProgress('rankStatus',step,totalSteps,`評分 ${step}/${totalSteps}`);
     await sleep(500);
   }
 
@@ -1099,7 +1130,7 @@ async function rankTop3(){
   renderMatrix();
 
   // 階段三：總指揮覆核
-  $('rankStatus').textContent='總指揮覆核 Top 3...';
+  setProgress('rankStatus',step,totalSteps,'總指揮覆核 Top 3');
   const top5=RANKING.slice(0,5).map(r=>`${r.sym}:混合${r.hybrid}(AI${r.wavg}/數據${r.dataScore}/歷史${r.histScore})`).join(', ');
   let top3;
   try{
@@ -1110,12 +1141,12 @@ async function rankTop3(){
     if(top3.length<3){ for(const x of RANKING){ if(!top3.includes(x.sym)){top3.push(x.sym);} if(top3.length>=3)break; } }
     $('rankVerdict').classList.remove('hidden');
     $('rankSum').innerHTML=`<b style="color:var(--text)">總指揮裁定 Top 3：${esc(top3.join(' · '))}</b><br>${esc(r.summary||'')}`;
-    $('rankStatus').textContent='✓ 評選完成';
+    setProgress('rankStatus',totalSteps,totalSteps,'評選完成');
   }catch(e){
     top3=RANKING.slice(0,3).map(r=>r.sym);
     $('rankVerdict').classList.remove('hidden');
     $('rankSum').innerHTML=`<b>Top 3（依加權分數）：${esc(top3.join(' · '))}</b>`;
-    $('rankStatus').textContent='✓ 評選完成（總指揮覆核略過）';
+    setProgress('rankStatus',totalSteps,totalSteps,'評選完成');
   }
   renderTop3Cards(top3);
   }catch(err){
@@ -1238,8 +1269,10 @@ async function deepDiveCard(sym,medal,host){
   const dataStr=marketBrief(c);
   const r1={},r2={};
   try{
+    const totalSteps=agents.length*(mode.secondRound?2:1)+1;
+    let step=0;
     for(const a of agents){
-      status.textContent=`第一輪 · ${a.name}`;
+      status.innerHTML=`<span>第一輪 · ${esc(a.name)} ${Math.round(step/totalSteps*100)}%</span><span class="progress"><span class="progress-fill" style="width:${Math.round(step/totalSteps*100)}%"></span></span>`;
       const sys=agentRolePrompt(a)+`\n`+
         `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整推理",`+
         `"dataUsed":"列出具體用的數據及數值","triggers":"哪些指標變化觸發判斷"}`;
@@ -1248,13 +1281,14 @@ async function deepDiveCard(sym,medal,host){
         r1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—',dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
         paintLocal(a.id,v,r1[a.id].confidence,r1[a.id].reason,false,{data:r1[a.id].dataUsed,triggers:r1[a.id].triggers});
       }catch(e){r1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paintLocal(a.id,'hold',50,'(分析失敗)',false,null);}
+      step++;
       await sleep(400);
     }
     await sleep(500);
     const board=agents.map(a=>`${a.name}:${labelMap[r1[a.id].verdict]}(${r1[a.id].confidence}%)-${r1[a.id].reason}`).join('\n');
     if(mode.secondRound){
       for(const a of agents){
-        status.textContent=`第二輪 · ${a.name}`;
+        status.innerHTML=`<span>第二輪 · ${esc(a.name)} ${Math.round(step/totalSteps*100)}%</span><span class="progress"><span class="progress-fill" style="width:${Math.round(step/totalSteps*100)}%"></span></span>`;
         const sys=agentRolePrompt(a)+`\n`+
           `你已看全場第一輪意見,從你流派角度重新判斷:堅持或修正?`+
           `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整理由",`+
@@ -1266,12 +1300,13 @@ async function deepDiveCard(sym,medal,host){
             dataUsed:r.dataUsed||r1[a.id].dataUsed,triggers:r.triggers||r1[a.id].triggers};
           paintLocal(a.id,v,r2[a.id].confidence,r2[a.id].reason,ch,{data:r2[a.id].dataUsed,triggers:r2[a.id].triggers});
         }catch(e){r2[a.id]={...r1[a.id],changed:false};}
+        step++;
         await sleep(400);
       }
     }else{
       Object.assign(r2,r1);
     }
-    status.textContent='總指揮裁決中...';
+    status.innerHTML=`<span>總指揮裁決 ${Math.round(step/totalSteps*100)}%</span><span class="progress"><span class="progress-fill" style="width:${Math.round(step/totalSteps*100)}%"></span></span>`;
     const cnt={buy:0,sell:0,hold:0};agents.forEach(a=>cnt[r2[a.id].verdict]++);
     const board2=agents.map(a=>`${a.name}:${labelMap[r2[a.id].verdict]}(${r2[a.id].confidence}%)-${r2[a.id].reason}`).join('\n');
     const sys=`你是總指揮。綜合9位討論後意見做裁決,並給出完整交易計畫。`+
@@ -1288,7 +1323,7 @@ async function deepDiveCard(sym,medal,host){
     card.querySelector('.dd-conf').textContent=(r.confidence||'—')+'%';
     card.querySelector('.dd-tally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
     card.querySelector('.dd-sum').innerHTML=renderPlan(r,c.price,sym,buildAnalysisMemory(sym,c,agents,r2,cnt,mode))+esc(r.summary||'—');
-    status.textContent='✓ 完成';
+    status.innerHTML=`<span>完成 100%</span><span class="progress"><span class="progress-fill" style="width:100%"></span></span>`;
   }catch(e){status.textContent='✗ 錯誤: '+e.message;}
 }
 
@@ -1315,6 +1350,7 @@ updateModeUI();
 
 // ---------- 推薦記錄（雲端 KV）----------
 let RECS=[];
+const OPEN_REC_IDS=new Set();
 let recSyncBusy=false;
 async function saveRec(rec){
   if(!ACCESS_TOKEN) return;
@@ -1363,6 +1399,7 @@ async function clearRecs(){
 
 async function deleteRec(id){
   if(!ACCESS_TOKEN||!id) return;
+  OPEN_REC_IDS.delete(id);
   RECS=RECS.filter(r=>r.id!==id);
   renderRecs();
   try{
@@ -1435,16 +1472,17 @@ function renderRecs(){
     const t=new Date(rec.time).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
     const curText=cur?'$'+cur:(rec.lastPrice?'$'+rec.lastPrice:'—');
     const pctText=st.pct!==null?(st.pct>0?'+':'')+st.pct+'%':'—';
-    return `<div class="rec-card" data-rec-id="${esc(rec.id)}" style="border-top:1px solid var(--line)">
-      <div class="rec-head" style="padding:10px 12px;display:grid;grid-template-columns:minmax(90px,1fr) repeat(4,minmax(74px,auto)) 32px;gap:10px;align-items:center;cursor:pointer">
-        <div style="font-weight:700">${esc(rec.sym)} <span style="color:${dirColor};font-size:10px">${dir}</span><div style="color:var(--dimmer);font-size:10px">${t}</div></div>
-        <div style="text-align:right"><div style="color:var(--dimmer);font-size:9px">進場</div>$${rec.entry}</div>
-        <div style="text-align:right;color:var(--dim)"><div style="color:var(--dimmer);font-size:9px">現價</div>${curText}</div>
-        <div style="text-align:right;color:${(st.pct??0)>=0?'var(--green)':'var(--red)'};font-weight:700"><div style="color:var(--dimmer);font-size:9px">損益</div>${pctText}</div>
-        <div style="text-align:center;color:${st.color};font-size:11px">${st.state}</div>
+    const open=OPEN_REC_IDS.has(rec.id);
+    return `<div class="rec-card ${open?'open':''}" data-rec-id="${esc(rec.id)}" style="border-top:1px solid var(--line)">
+      <div class="rec-head" style="padding:12px 14px;display:grid;grid-template-columns:minmax(120px,1.4fr) repeat(4,minmax(86px,.75fr)) 32px;gap:12px;align-items:center;cursor:pointer">
+        <div style="font-weight:700"><span class="mono" style="color:var(--cyan);margin-right:6px">${open?'▲':'▼'}</span>${esc(rec.sym)} <span style="color:${dirColor};font-size:10px">${dir}</span><div style="color:var(--dimmer);font-size:10px">${t}</div></div>
+        <div class="rec-info" style="text-align:right"><div class="k">進場</div><div class="v">$${rec.entry}</div></div>
+        <div class="rec-info" style="text-align:right"><div class="k">現價</div><div class="v" style="color:var(--dim)">${curText}</div></div>
+        <div class="rec-info" style="text-align:right"><div class="k">損益</div><div class="v" style="color:${(st.pct??0)>=0?'var(--green)':'var(--red)'}">${pctText}</div></div>
+        <div class="rec-info" style="text-align:center"><div class="k">狀態</div><div class="v" style="color:${st.color}">${st.state}</div></div>
         <button class="btn ghost rec-delete" data-rec-id="${esc(rec.id)}" title="移除此幣種" style="padding:4px 8px;font-size:12px">×</button>
       </div>
-      <div class="rec-detail" style="display:none;padding:0 12px 12px;color:var(--dim);font-size:11px;line-height:1.7">
+      <div class="rec-detail" style="display:${open?'block':'none'};padding:0 14px 14px;color:var(--dim);font-size:11px;line-height:1.7">
         ${renderRecDetail(rec)}
       </div>
     </div>`;
@@ -1458,24 +1496,35 @@ function renderRecs(){
 
 function renderRecDetail(rec){
   const votes=(rec.memory?.agentVotes||[]).map(v=>`<span class="chip" style="margin:3px">${esc(v.name)} ${labelMap[v.verdict]||v.verdict} ${Number(v.confidence||0)}%</span>`).join('');
-  const risk=`止損 $${rec.stopLoss} · 止盈 $${rec.takeProfit} · RR ${esc(rec.rr||'—')} · 信心 ${rec.confidence||'—'}%`;
   const market=rec.memory?.market;
-  const mkt=market?`<div style="margin-top:6px">記錄時價格 $${market.price} · 5m ${market.change?.m5??'—'}% · 15m ${market.change?.m15??'—'}% · Funding ${market.derivatives?.fundingPct??'—'}% · OI ${market.derivatives?.oiChange5mPct??'—'}%</div>`:'';
-  const smc=market?.technical?.smc?`<div>SMC ${esc(market.technical.smc.structure)} · ${esc(market.technical.smc.bos||'無BOS')} · ${esc(market.technical.smc.choch||'無CHoCH')} · ${esc(market.technical.smc.zone||'—')}</div>`:'';
-  return `<div style="border-top:1px dashed var(--line);padding-top:10px">
-    <div style="color:var(--text);font-weight:700;margin-bottom:5px">推薦記錄</div>
-    <div>${risk}</div>
-    ${mkt}${smc}
-    <div style="margin-top:7px;color:var(--text);font-weight:700">分析師投票</div>
-    <div>${votes||'<span style="color:var(--dimmer)">此筆舊記錄沒有分析師投票記憶</span>'}</div>
+  const smc=market?.technical?.smc;
+  return `<div style="border-top:1px dashed var(--line);padding-top:12px">
+    <div class="rec-detail-grid">
+      <div class="rec-info"><div class="k">止損</div><div class="v" style="color:var(--red)">$${rec.stopLoss}</div></div>
+      <div class="rec-info"><div class="k">止盈</div><div class="v" style="color:var(--green)">$${rec.takeProfit}</div></div>
+      <div class="rec-info"><div class="k">盈虧比</div><div class="v" style="color:var(--cyan)">${esc(rec.rr||'—')}</div></div>
+      <div class="rec-info"><div class="k">AI 信心</div><div class="v">${rec.confidence||'—'}%</div></div>
+      <div class="rec-info"><div class="k">記錄時價格</div><div class="v">${market?'$'+market.price:'—'}</div></div>
+      <div class="rec-info"><div class="k">5m / 15m</div><div class="v">${market?`${market.change?.m5??'—'}% / ${market.change?.m15??'—'}%`:'—'}</div></div>
+      <div class="rec-info"><div class="k">Funding / OI</div><div class="v">${market?`${market.derivatives?.fundingPct??'—'}% / ${market.derivatives?.oiChange5mPct??'—'}%`:'—'}</div></div>
+      <div class="rec-info"><div class="k">SMC</div><div class="v">${smc?`${esc(smc.structure)} · ${esc(smc.zone||'—')}`:'—'}</div></div>
+    </div>
+    <div class="rec-info" style="margin-top:10px">
+      <div class="k">SMC 訊號</div>
+      <div class="v">${smc?`${esc(smc.bos||'無BOS')} · ${esc(smc.choch||'無CHoCH')} · ${esc(smc.sweep||'無掃蕩')}`:'—'}</div>
+    </div>
+    <div style="margin-top:10px;color:var(--text);font-weight:700">分析師投票</div>
+    <div class="rec-votes">${votes||'<span style="color:var(--dimmer)">此筆舊記錄沒有分析師投票記憶</span>'}</div>
   </div>`;
 }
 
 function bindRecCardEvents(){
   document.querySelectorAll('.rec-head').forEach(head=>{
     head.addEventListener('click',()=>{
-      const detail=head.closest('.rec-card').querySelector('.rec-detail');
-      detail.style.display=detail.style.display==='none'?'block':'none';
+      const card=head.closest('.rec-card');
+      const id=card.getAttribute('data-rec-id');
+      if(OPEN_REC_IDS.has(id)) OPEN_REC_IDS.delete(id); else OPEN_REC_IDS.add(id);
+      renderRecs();
     });
   });
   document.querySelectorAll('.rec-delete').forEach(btn=>{
