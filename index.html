@@ -227,6 +227,8 @@ async function fetchKlineMetrics(pair){
     const k=await res.json();
     if(!Array.isArray(k)||k.length<20) return null;
     const closes=k.map(x=>parseFloat(x[4]));
+    const highs=k.map(x=>parseFloat(x[2]));
+    const lows=k.map(x=>parseFloat(x[3]));
     const vols=k.map(x=>parseFloat(x[5]));
     const rsi=calcRSI(closes,14);
     const last=closes[closes.length-1];
@@ -237,7 +239,16 @@ async function fetchKlineMetrics(pair){
     const curVol=vols[vols.length-1];
     const avgVol=vols.slice(-21,-1).reduce((a,b)=>a+b,0)/20;
     const volMult=avgVol?curVol/avgVol:1;
-    return {rsi,chg5m:+chg5m.toFixed(2),chg15m:+chg15m.toFixed(2),volMult:+volMult.toFixed(1)};
+    const ema20=calcEMA(closes,20), ema50=calcEMA(closes,50);
+    const macd=calcMACD(closes);
+    const bb=calcBollinger(closes,20,2);
+    const atr=calcATR(highs,lows,closes,14);
+    const sr=calcSupportResistance(highs,lows,last);
+    const trend=last>ema20&&ema20>ema50?'多頭排列':last<ema20&&ema20<ema50?'空頭排列':'震盪/轉折';
+    return {
+      rsi,chg5m:+chg5m.toFixed(2),chg15m:+chg15m.toFixed(2),volMult:+volMult.toFixed(1),
+      ema20:+ema20.toFixed(6),ema50:+ema50.toFixed(6),macd,bb,atr:+atr.toFixed(6),sr,trend
+    };
   }catch(e){ return null; }
 }
 
@@ -252,6 +263,54 @@ function calcRSI(closes,period=14){
   if(avgL===0) return 100;
   const rs=avgG/avgL;
   return Math.round(100-100/(1+rs));
+}
+
+function calcEMA(values,period){
+  if(values.length===0) return 0;
+  const k=2/(period+1);
+  const seed=values.slice(0,Math.min(period,values.length)).reduce((a,b)=>a+b,0)/Math.min(period,values.length);
+  return values.slice(Math.min(period,values.length)).reduce((ema,v)=>v*k+ema*(1-k),seed);
+}
+
+function calcMACD(closes){
+  const ema12=calcEMA(closes,12), ema26=calcEMA(closes,26);
+  const macd=ema12-ema26;
+  const recent=closes.slice(-35);
+  const macdSeries=recent.map((_,i)=>{
+    const slice=recent.slice(0,i+1);
+    return calcEMA(slice,12)-calcEMA(slice,26);
+  });
+  const signal=calcEMA(macdSeries,9);
+  const hist=macd-signal;
+  return {macd:+macd.toFixed(6),signal:+signal.toFixed(6),hist:+hist.toFixed(6),bias:hist>0?'多方動能':'空方動能'};
+}
+
+function calcBollinger(closes,period=20,mult=2){
+  const arr=closes.slice(-period);
+  const mid=arr.reduce((a,b)=>a+b,0)/arr.length;
+  const variance=arr.reduce((a,b)=>a+Math.pow(b-mid,2),0)/arr.length;
+  const sd=Math.sqrt(variance);
+  const upper=mid+sd*mult, lower=mid-sd*mult, last=closes[closes.length-1];
+  const pos=upper===lower?0.5:(last-lower)/(upper-lower);
+  return {upper:+upper.toFixed(6),mid:+mid.toFixed(6),lower:+lower.toFixed(6),position:+pos.toFixed(2)};
+}
+
+function calcATR(highs,lows,closes,period=14){
+  const trs=[];
+  for(let i=1;i<highs.length;i++){
+    trs.push(Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1])));
+  }
+  const arr=trs.slice(-period);
+  return arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0;
+}
+
+function calcSupportResistance(highs,lows,last){
+  const recentHighs=highs.slice(-30).filter(x=>x>last).sort((a,b)=>a-b);
+  const recentLows=lows.slice(-30).filter(x=>x<last).sort((a,b)=>b-a);
+  return {
+    support:recentLows.length?+recentLows[0].toFixed(6):null,
+    resistance:recentHighs.length?+recentHighs[0].toFixed(6):null
+  };
 }
 
 // 抓單一幣的 OI 5分鐘變化%
@@ -369,6 +428,40 @@ let ACCESS_TOKEN=localStorage.getItem('accessToken')||'',MODEL='llama-3.1-8b-ins
 let MKT=[],SCREENED={},R1={},R2={},curCoin=null;
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function esc(v){
+  return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function marketFeatures(c){
+  return {
+    symbol:c.sym,pair:c.pair,price:c.price,
+    change:{m5:c.chg5m??0,m15:c.chg15m??0,h24:c.chg24??0},
+    technical:{
+      trend:c.trend||'未知',rsi:c.rsi??50,ema20:c.ema20??null,ema50:c.ema50??null,
+      macd:c.macd||null,bollinger:c.bb||null,atr:c.atr??null,
+      support:c.sr?.support??null,resistance:c.sr?.resistance??null
+    },
+    derivatives:{fundingPct:c.funding??0,oiChange5mPct:c.oiChg5m??0},
+    volume:{quoteVolumeUSDT:c.volUSDT??0,volumeMultiple:c.volMult??1},
+    riskFlags:riskFlags(c)
+  };
+}
+
+function riskFlags(c){
+  const flags=[];
+  if((c.rsi??50)>75) flags.push('RSI極度超買');
+  if((c.rsi??50)<25) flags.push('RSI極度超賣');
+  if(Math.abs(c.oiChg5m??0)>=5) flags.push('OI短線異常');
+  if((c.volMult??1)>=2.5) flags.push('成交量暴增');
+  if(Math.abs(c.funding??0)>=0.05) flags.push('資金費率擁擠');
+  if(c.bb&&c.bb.position>0.95) flags.push('貼近布林上緣');
+  if(c.bb&&c.bb.position<0.05) flags.push('貼近布林下緣');
+  return flags.length?flags:['無明顯極端風險'];
+}
+
+function marketBrief(c){
+  return JSON.stringify(marketFeatures(c),null,2);
+}
 
 async function groq(system,user,retries=3){
   if(!ACCESS_TOKEN) throw new Error('尚未設定存取密碼');
@@ -503,7 +596,13 @@ async function doScan(silent=false){
       const batch=prelim.slice(i,i+batchSize);
       const results=await Promise.all(batch.map(async c=>{
         const [m,oiChg]=await Promise.all([fetchKlineMetrics(c.pair),fetchOIChange(c.pair)]);
-        return {...c, rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1, oiChg5m:oiChg, liqSpike:0};
+        return {
+          ...c,
+          rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1,
+          ema20:m?m.ema20:null, ema50:m?m.ema50:null, macd:m?m.macd:null, bb:m?m.bb:null,
+          atr:m?m.atr:null, sr:m?m.sr:null, trend:m?m.trend:'未知',
+          oiChg5m:oiChg, liqSpike:0
+        };
       }));
       enriched.push(...results);
       showStatus(`⚡ 計算指標+OI ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`);
@@ -567,7 +666,7 @@ async function analyze(sym){
   $('verdict').classList.add('hidden');
   buildAgents();
   $('analysisArea').scrollIntoView({behavior:'smooth',block:'start'});
-  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, OI 5分鐘變化${c.oiChg5m}%, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
+  const dataStr=marketBrief(c);
   try{
     // Round 1
     for(const a of AGENTS){
@@ -577,7 +676,7 @@ async function analyze(sym){
         `"reason":"繁中2-3句完整推理,必須從你流派角度",`+
         `"dataUsed":"具體列出用了哪些數據及數值(例:RSI=28、5m+3.5%、OI+12%、資金費率-0.02%)",`+
         `"triggers":"哪些指標變化觸發判斷(例:RSI跌破30=超賣訊號)"}`;
-      try{const r=pj(await groq(sys,`${sym} 數據：${dataStr}`));
+      try{const r=pj(await groq(sys,`${sym} 結構化市場資料：\n${dataStr}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
         R1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—',
           dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
@@ -595,7 +694,7 @@ async function analyze(sym){
         `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,`+
         `"reason":"繁中2-3句:堅持或改變的理由,可點名其他流派",`+
         `"dataUsed":"重新權衡用到的數據及數值","triggers":"哪些觀點/指標讓你改變或更堅定"}`;
-      try{const r=pj(await groq(sys,`${sym}數據:${dataStr}\n全場意見:\n${board}\n你原本:${labelMap[R1[a.id].verdict]}`));
+      try{const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n全場意見:\n${board}\n你原本:${labelMap[R1[a.id].verdict]}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:R1[a.id].verdict;
         const ch=v!==R1[a.id].verdict;
         R2[a.id]={verdict:v,confidence:r.confidence||R1[a.id].confidence,reason:r.reason||'—',changed:ch,
@@ -614,13 +713,14 @@ async function analyze(sym){
       `回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,`+
       `"entry":進場價數字,"stopLoss":止損價數字,"takeProfit":止盈價數字,"rr":"盈虧比如1:2.3",`+
       `"summary":"繁中3-4句:權衡、理由、風險提示"}。若觀望則entry/stopLoss/takeProfit填null。`;
-    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n現價:${c.price}\n討論後意見:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
+    const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n現價:${c.price}\n討論後意見:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
     const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
+    r.verdict=v;
     $('verdict').classList.remove('hidden');
     $('vFinal').textContent=labelMap[v];$('vFinal').className='v-final mono '+v;
     $('vPos').textContent=r.position||'—';$('vConf').textContent=(r.confidence||'—')+'%';
     $('vTally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
-    $('vSum').innerHTML=renderPlan(r,c.price,sym)+(r.summary||'—');
+    $('vSum').innerHTML=renderPlan(r,c.price,sym)+esc(r.summary||'—');
     $('pbStatus').textContent='✓ 完成';
   }catch(e){$('errBox').style.display='block';$('errBox').textContent=e.message;$('pbStatus').textContent='✗ 錯誤';}
 }
@@ -638,6 +738,12 @@ function renderPlan(r,curPrice,sym){
   if(!r.entry||!r.stopLoss||!r.takeProfit){
     return `<div style="background:var(--panel);border:1px solid var(--amber);border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:12px;color:var(--amber)">
       ⚠️ AI 沒給完整交易點位（進場/止損/止盈），無法加入戰績追蹤。可再跑一次討論。
+    </div>`;
+  }
+  const checked=validateTradePlan(r,curPrice);
+  if(!checked.ok){
+    return `<div style="background:var(--panel);border:1px solid var(--amber);border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:12px;color:var(--amber)">
+      ⚠️ 交易計畫未通過風控檢查：${esc(checked.reason)}。系統已阻止加入戰績，建議重新分析或改觀望。
     </div>`;
   }
   const dir=r.verdict==='buy'?'做多':'做空';
@@ -658,6 +764,25 @@ function renderPlan(r,curPrice,sym){
     </div>
     <button class="btn add-rec-btn" data-rec-id="${recId}" style="width:100%;padding:10px;font-size:13px;font-weight:700">＋ 加入戰績追蹤</button>
   </div>`;
+}
+
+function validateTradePlan(r,curPrice){
+  const entry=Number(r.entry), sl=Number(r.stopLoss), tp=Number(r.takeProfit), price=Number(curPrice);
+  if(!Number.isFinite(entry)||!Number.isFinite(sl)||!Number.isFinite(tp)||entry<=0||sl<=0||tp<=0){
+    return {ok:false,reason:'進場、止損、止盈必須是有效正數'};
+  }
+  if(r.verdict==='buy' && !(sl<entry && entry<tp)) return {ok:false,reason:'多單必須符合 止損 < 進場 < 止盈'};
+  if(r.verdict==='sell' && !(tp<entry && entry<sl)) return {ok:false,reason:'空單必須符合 止盈 < 進場 < 止損'};
+  const risk=Math.abs(entry-sl), reward=Math.abs(tp-entry);
+  const rr=reward/risk;
+  if(!Number.isFinite(rr)||rr<1.5) return {ok:false,reason:`盈虧比 ${rr.toFixed(2)} 低於 1.5`};
+  const drift=Math.abs(entry-price)/price;
+  if(drift>0.03) return {ok:false,reason:'進場價距離現價超過 3%，可能不是當下可執行計畫'};
+  const stopPct=risk/entry;
+  if(stopPct<0.002) return {ok:false,reason:'止損距離小於 0.2%，容易被雜訊掃出'};
+  if(stopPct>0.08) return {ok:false,reason:'止損距離大於 8%，風險過高'};
+  r.rr=`1:${rr.toFixed(2)}`;
+  return {ok:true,rr};
 }
 
 // 委派事件：點「加入戰績」
@@ -686,7 +811,7 @@ function candidatePool(){
   return Object.values(pool);
 }
 function coinDataLine(c){
-  return `${c.sym}(來源:${c.sources.join('/')}): 24h${c.chg24}%,5m${c.chg5m}%,15m${c.chg15m}%,RSI${c.rsi},量${c.volMult}x,OI${c.oiChg5m}%,資金${c.funding}%,清算${c.liqSpike}x`;
+  return `${c.sym}(來源:${c.sources.join('/')}): 24h${c.chg24}%,5m${c.chg5m}%,15m${c.chg15m}%,趨勢${c.trend||'未知'},RSI${c.rsi},MACD柱${c.macd?.hist??'—'},ATR${c.atr??'—'},支撐${c.sr?.support??'—'},壓力${c.sr?.resistance??'—'},量${c.volMult}x,OI${c.oiChg5m}%,資金${c.funding}%,清算${c.liqSpike}x`;
 }
 
 async function rankTop3(){
@@ -748,12 +873,12 @@ async function rankTop3(){
     top3=(r.top3||[]).filter(s=>symbols.includes(s)).slice(0,3);
     if(top3.length<3){ for(const x of RANKING){ if(!top3.includes(x.sym)){top3.push(x.sym);} if(top3.length>=3)break; } }
     $('rankVerdict').classList.remove('hidden');
-    $('rankSum').innerHTML=`<b style="color:var(--text)">總指揮裁定 Top 3：${top3.join(' · ')}</b><br>${r.summary||''}`;
+    $('rankSum').innerHTML=`<b style="color:var(--text)">總指揮裁定 Top 3：${esc(top3.join(' · '))}</b><br>${esc(r.summary||'')}`;
     $('rankStatus').textContent='✓ 評選完成';
   }catch(e){
     top3=RANKING.slice(0,3).map(r=>r.sym);
     $('rankVerdict').classList.remove('hidden');
-    $('rankSum').innerHTML=`<b>Top 3（依加權分數）：${top3.join(' · ')}</b>`;
+    $('rankSum').innerHTML=`<b>Top 3（依加權分數）：${esc(top3.join(' · '))}</b>`;
     $('rankStatus').textContent='✓ 評選完成（總指揮覆核略過）';
   }
   renderTop3Cards(top3);
@@ -861,7 +986,7 @@ async function deepDiveCard(sym,medal,host){
       `<div style="color:var(--dimmer);margin-bottom:3px">📊 使用的數據</div><div style="margin-bottom:6px">${ev.data||'—'}</div>`+
       `<div style="color:var(--dimmer);margin-bottom:3px">⚡ 觸發指標</div><div>${ev.triggers||'—'}</div>`;
   };
-  const dataStr=`價格$${c.price}, 24h漲跌${c.chg24}%, 近5分鐘${c.chg5m}%, 近15分鐘${c.chg15m}%, RSI(14)${c.rsi}, 成交量倍數${c.volMult}x, OI 5分鐘變化${c.oiChg5m}%, 資金費率${c.funding}%, 24h成交額${(c.volUSDT/1e6).toFixed(0)}百萬USDT`;
+  const dataStr=marketBrief(c);
   const r1={},r2={};
   try{
     for(const a of AGENTS){
@@ -869,7 +994,7 @@ async function deepDiveCard(sym,medal,host){
       const sys=agentRolePrompt(a)+`\n`+
         `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整推理",`+
         `"dataUsed":"列出具體用的數據及數值","triggers":"哪些指標變化觸發判斷"}`;
-      try{const r=pj(await groq(sys,`${sym} 數據：${dataStr}`));
+      try{const r=pj(await groq(sys,`${sym} 結構化市場資料：\n${dataStr}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
         r1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—',dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
         paintLocal(a.id,v,r1[a.id].confidence,r1[a.id].reason,false,{data:r1[a.id].dataUsed,triggers:r1[a.id].triggers});
@@ -884,7 +1009,7 @@ async function deepDiveCard(sym,medal,host){
         `你已看全場9人第一輪意見,從你流派角度重新判斷:堅持或修正?`+
         `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整理由",`+
         `"dataUsed":"重新權衡用到的數據","triggers":"哪些觀點或指標讓你改變/更堅定"}`;
-      try{const r=pj(await groq(sys,`${sym}數據:${dataStr}\n全場:\n${board}\n你原本:${labelMap[r1[a.id].verdict]}`));
+      try{const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n全場:\n${board}\n你原本:${labelMap[r1[a.id].verdict]}`));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:r1[a.id].verdict;
         const ch=v!==r1[a.id].verdict;
         r2[a.id]={verdict:v,confidence:r.confidence||r1[a.id].confidence,reason:r.reason||'—',changed:ch,
@@ -901,14 +1026,15 @@ async function deepDiveCard(sym,medal,host){
       `回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,`+
       `"entry":進場價數字,"stopLoss":止損價數字,"takeProfit":止盈價數字,"rr":"盈虧比如1:2.3",`+
       `"summary":"繁中3-4句:權衡、理由、風險"}。觀望則entry等填null。`;
-    const r=pj(await groq(sys,`${sym}數據:${dataStr}\n現價:${c.price}\n討論後:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
+    const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n現價:${c.price}\n討論後:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`));
     const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
+    r.verdict=v;
     const vc=card.querySelector('.dd-verdict');vc.classList.remove('hidden');
     const vf=card.querySelector('.dd-final');vf.textContent=labelMap[v];vf.className='v-final mono dd-final '+v;
     card.querySelector('.dd-pos').textContent=r.position||'—';
     card.querySelector('.dd-conf').textContent=(r.confidence||'—')+'%';
     card.querySelector('.dd-tally').textContent=`${cnt.buy}/${cnt.hold}/${cnt.sell}`;
-    card.querySelector('.dd-sum').innerHTML=renderPlan(r,c.price,sym)+(r.summary||'—');
+    card.querySelector('.dd-sum').innerHTML=renderPlan(r,c.price,sym)+esc(r.summary||'—');
     status.textContent='✓ 完成';
   }catch(e){status.textContent='✗ 錯誤: '+e.message;}
 }
@@ -929,7 +1055,11 @@ async function saveRec(rec){
 }
 async function loadRecs(){
   try{
-    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=getRecs');
+    if(!ACCESS_TOKEN){ RECS=[]; renderRecs(); return; }
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=getRecs',{
+      headers:{'X-Access-Token':ACCESS_TOKEN}
+    });
+    if(res.status===401){ RECS=[]; renderRecs(); return; }
     const d=await res.json();
     RECS=d.recs||[];
     renderRecs();
