@@ -137,7 +137,13 @@
   .modal-backdrop.show{display:flex;}
   .chart-modal{width:min(94vw,1100px);background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 22px 80px rgba(0,0,0,.55);overflow:hidden;}
   .chart-modal .kline-box{border:none;border-radius:0;margin:0;padding:14px;}
-  .chart-modal .kline-canvas{height:520px;}
+  .chart-modal .kline-canvas{height:520px;touch-action:none;user-select:none;cursor:grab;}
+  .chart-modal .kline-canvas:active{cursor:grabbing;}
+  @media (max-width:700px){
+    .modal-backdrop{padding:8px;align-items:stretch;overscroll-behavior:contain;}
+    .chart-modal{width:100%;max-height:94vh;}
+    .chart-modal .kline-canvas{height:62vh;}
+  }
   @media(max-width:900px){.rec-detail-grid{grid-template-columns:1fr 1fr;}.rec-head{grid-template-columns:1fr 1fr 1fr!important;}}
   @media(max-width:1100px){.watch-row{grid-template-columns:1fr 1fr;}}
   @media(max-width:560px){.rec-detail-grid{grid-template-columns:1fr;}.rec-head{grid-template-columns:1fr 1fr!important;}.report-grid{grid-template-columns:1fr;}.watch-row{grid-template-columns:1fr;}}
@@ -1008,6 +1014,40 @@ function intervalMs(interval){
   if(interval==='1M') return 2592000000;
   return 60000;
 }
+
+function lerp(a,b,t){
+  a=Number(a);b=Number(b);t=Math.max(0,Math.min(1,Number(t)||0));
+  if(!Number.isFinite(a)) a=b;
+  if(!Number.isFinite(b)) b=a;
+  return a+(b-a)*t;
+}
+
+function buildSyntheticSeedRows(seed,interval,basePrice,now){
+  const step=intervalMs(interval);
+  const count=interval==='1s'?180:240;
+  const minute=60000;
+  const rows=[];
+  const src=(Array.isArray(seed)?seed:[]).filter(k=>Number.isFinite(k.close)&&Number.isFinite(k.time));
+  const lastClose=Number(src.at(-1)?.close||basePrice||0);
+  for(let i=0;i<count;i++){
+    const time=Math.floor((now-(count-i)*step)/step)*step;
+    let k=src.find(x=>time>=x.time&&time<x.time+minute);
+    if(!k) k=src.filter(x=>x.time<=time).at(-1)||src.at(0);
+    if(!k){
+      rows.push({time,open:lastClose,high:lastClose,low:lastClose,close:lastClose,volume:0});
+      continue;
+    }
+    const p=Math.max(0,Math.min(1,(time-k.time)/minute));
+    const p2=Math.max(0,Math.min(1,(time+step-k.time)/minute));
+    const open=lerp(k.open,k.close,p);
+    const close=lerp(k.open,k.close,p2);
+    const wick=Math.max(0,Number(k.high)-Number(k.low))*Math.min(1,step/minute)*.35;
+    const high=Math.max(open,close)+wick;
+    const low=Math.min(open,close)-wick;
+    rows.push({time,open,high,low,close,volume:(Number(k.volume)||0)*Math.min(1,step/minute)});
+  }
+  return rows;
+}
 let PRICE_WS=null,PRICE_WS_TIMER=null,PRICE_WS_MANUAL=false,PRICE_WS_KEY='';
 let CHART_WS=null,CHART_WS_MANUAL=false;
 let lastRecRenderAt=0;
@@ -1061,15 +1101,7 @@ async function loadModalChart(force=false){
       const seed=await fetchKlines(pair,'1m',180);
       const now=Date.now();
       const basePrice=seed.at(-1)?.close||MKT.find(c=>c.sym===sym)?.price||0;
-      const step=intervalMs(interval);
-      const count=interval==='1s'?180:240;
-      const source=seed.length?seed:[{time:now,open:basePrice,high:basePrice,low:basePrice,close:basePrice,volume:0}];
-      CURRENT_CHART.rows=Array.from({length:count},(_,i)=>{
-        const time=Math.floor((now-(count-i)*step)/step)*step;
-        const ref=source[Math.min(source.length-1,Math.floor(i/count*source.length))]||source.at(-1);
-        const price=Number(ref?.close||basePrice);
-        return {time,open:price,high:price,low:price,close:price,volume:0};
-      });
+      CURRENT_CHART.rows=buildSyntheticSeedRows(seed,interval,basePrice,now);
       drawKline(canvas,CURRENT_CHART.rows,{sym,interval});
       return;
     }
@@ -1087,7 +1119,9 @@ function connectChartWS(){
   const {sym,pair,interval}=CURRENT_CHART;
   if(!sym||!pair) return;
   CHART_WS_MANUAL=false;
-  const stream=isSyntheticInterval(interval)?`${pair.toLowerCase()}@aggTrade`:`${pair.toLowerCase()}@kline_${binanceInterval(interval)}`;
+  const stream=isSyntheticInterval(interval)
+    ? `${pair.toLowerCase()}@aggTrade/${pair.toLowerCase()}@ticker`
+    : `${pair.toLowerCase()}@kline_${binanceInterval(interval)}`;
   CHART_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${stream}`);
   CHART_WS.onopen=()=>{
     if($('modalChartMeta')) $('modalChartMeta').textContent=`${interval} · ${isSyntheticInterval(interval)?'成交合成K線':'WS 即時K線'}已連線`;
@@ -1097,10 +1131,21 @@ function connectChartWS(){
       const msg=JSON.parse(event.data);
       if(isSyntheticInterval(interval)){
         const d=msg.data||{};
-        const price=Number(d.p);
-        const qty=Number(d.q||0);
-        const ts=Number(d.T||Date.now());
-        if(Number.isFinite(price)) updateSyntheticCandle(sym,interval,price,qty,ts);
+        if(d.e==='aggTrade'||(d.a!==undefined&&d.p!==undefined&&d.q!==undefined)){
+          const price=Number(d.p);
+          const qty=Number(d.q||0);
+          const ts=Number(d.T||Date.now());
+          if(Number.isFinite(price)){
+            CURRENT_CHART.lastTradeAt=Date.now();
+            updateSyntheticCandle(sym,interval,price,qty,ts);
+          }
+        }else if(d.e==='24hrTicker'||d.c!==undefined){
+          const price=Number(d.c);
+          const ts=Number(d.E||Date.now());
+          if(Number.isFinite(price)&&(!CURRENT_CHART.lastTradeAt||Date.now()-CURRENT_CHART.lastTradeAt>1500)){
+            updateSyntheticCandle(sym,interval,price,0,ts);
+          }
+        }
         return;
       }
       const k=msg.data?.k;
@@ -1242,7 +1287,7 @@ function drawKline(canvas,rows,{sym,interval}={}){
   ctx.fillText(new Date(last.time).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false}),w-pad.r,h-10);
 	  if(meta){
 	    const color=chg>=0?'var(--green)':'var(--red)';
-	    meta.innerHTML=`${interval} · 最新 $${formatPrice(last.close)} · <span style="color:${color}">${chg>=0?'+':''}${chg.toFixed(2)}%</span> · 滾輪縮放 / 拖曳滑動`;
+	    meta.innerHTML=`${interval} · 最新 $${formatPrice(last.close)} · <span style="color:${color}">${chg>=0?'+':''}${chg.toFixed(2)}%</span> · 滾輪/雙指縮放 · 拖曳滑動`;
 	  }
 	}
 
@@ -1251,10 +1296,23 @@ function redrawCurrentChart(){
   drawKline($('modalChartCanvas'),CURRENT_CHART.rows,{sym:CURRENT_CHART.sym,interval:CURRENT_CHART.interval});
 }
 
+function clampChartView(view=CURRENT_CHART.view){
+  const rows=CURRENT_CHART.rows||[];
+  if(!view) view=CURRENT_CHART.view={offset:0,visible:90};
+  view.visible=Math.max(18,Math.min(rows.length||90,Math.round(view.visible||90)));
+  view.offset=Math.max(0,Math.min(Math.max(0,rows.length-view.visible),Math.round(view.offset||0)));
+  return view;
+}
+
 function setupKlineInteractions(){
   const canvas=$('modalChartCanvas');
   if(!canvas||canvas.dataset.interactionsReady) return;
   canvas.dataset.interactionsReady='1';
+  const touchDistance=(touches)=>{
+    if(!touches||touches.length<2) return 0;
+    const a=touches[0],b=touches[1];
+    return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+  };
   canvas.addEventListener('wheel',(e)=>{
     if(!$('klineModal')?.classList.contains('show')) return;
     const rows=CURRENT_CHART.rows||[];
@@ -1265,7 +1323,7 @@ function setupKlineInteractions(){
     const oldVisible=view.visible||90;
     const factor=e.deltaY>0?1.14:.86;
     view.visible=Math.max(18,Math.min(rows.length,Math.round(oldVisible*factor)));
-    view.offset=Math.max(0,Math.min(rows.length-view.visible,view.offset||0));
+    clampChartView(view);
     redrawCurrentChart();
   },{passive:false});
   canvas.addEventListener('mousedown',(e)=>{
@@ -1282,8 +1340,9 @@ function setupKlineInteractions(){
     const rect=canvas.getBoundingClientRect();
     const candleW=Math.max(3,(rect.width-66)/Math.max(1,view.visible||90));
     const delta=Math.round((CURRENT_CHART.drag.x-e.clientX)/candleW);
-    view.offset=Math.max(0,Math.min(rows.length-(view.visible||90),CURRENT_CHART.drag.offset+delta));
+    view.offset=CURRENT_CHART.drag.offset+delta;
     CURRENT_CHART.view=view;
+    clampChartView(view);
     redrawCurrentChart();
   });
   window.addEventListener('mouseup',()=>{
@@ -1295,6 +1354,60 @@ function setupKlineInteractions(){
   canvas.addEventListener('dblclick',()=>{
     CURRENT_CHART.view={offset:0,visible:90};
     redrawCurrentChart();
+  });
+  canvas.addEventListener('touchstart',(e)=>{
+    if(!$('klineModal')?.classList.contains('show')) return;
+    const rows=CURRENT_CHART.rows||[];
+    if(rows.length<10) return;
+    e.preventDefault();
+    const view=clampChartView(CURRENT_CHART.view||{offset:0,visible:90});
+    if(e.touches.length>=2){
+      CURRENT_CHART.pinch={dist:touchDistance(e.touches),visible:view.visible,offset:view.offset};
+      CURRENT_CHART.drag=null;
+    }else if(e.touches.length===1){
+      CURRENT_CHART.drag={x:e.touches[0].clientX,offset:view.offset};
+      CURRENT_CHART.pinch=null;
+    }
+  },{passive:false});
+  canvas.addEventListener('touchmove',(e)=>{
+    if(!$('klineModal')?.classList.contains('show')) return;
+    const rows=CURRENT_CHART.rows||[];
+    if(rows.length<10) return;
+    e.preventDefault();
+    const view=clampChartView(CURRENT_CHART.view||{offset:0,visible:90});
+    if(e.touches.length>=2&&CURRENT_CHART.pinch){
+      const dist=touchDistance(e.touches);
+      if(dist>0){
+        const factor=CURRENT_CHART.pinch.dist/dist;
+        view.visible=Math.max(18,Math.min(rows.length,Math.round(CURRENT_CHART.pinch.visible*factor)));
+        view.offset=CURRENT_CHART.pinch.offset;
+        clampChartView(view);
+        redrawCurrentChart();
+      }
+      return;
+    }
+    if(e.touches.length===1&&CURRENT_CHART.drag){
+      const rect=canvas.getBoundingClientRect();
+      const candleW=Math.max(3,(rect.width-66)/Math.max(1,view.visible||90));
+      const delta=Math.round((CURRENT_CHART.drag.x-e.touches[0].clientX)/candleW);
+      view.offset=CURRENT_CHART.drag.offset+delta;
+      clampChartView(view);
+      redrawCurrentChart();
+    }
+  },{passive:false});
+  canvas.addEventListener('touchend',(e)=>{
+    if(e.touches.length===0){
+      CURRENT_CHART.drag=null;
+      CURRENT_CHART.pinch=null;
+    }else if(e.touches.length===1){
+      const view=clampChartView(CURRENT_CHART.view||{offset:0,visible:90});
+      CURRENT_CHART.drag={x:e.touches[0].clientX,offset:view.offset};
+      CURRENT_CHART.pinch=null;
+    }
+  });
+  canvas.addEventListener('touchcancel',()=>{
+    CURRENT_CHART.drag=null;
+    CURRENT_CHART.pinch=null;
   });
 }
 
@@ -2407,7 +2520,7 @@ function setLiveText(text){
   if($('liveText')) $('liveText').textContent=text;
 }
 
-function connectPriceWS(mode='combined'){
+function connectPriceWS(mode='combined',force=false){
   const pairs=[...new Set(MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase()))];
   if(pairs.length===0){
     setLiveText('等待掃描清單');
@@ -2415,20 +2528,20 @@ function connectPriceWS(mode='combined'){
   }
   const streams=pairs.flatMap(p=>[`${p}@aggTrade`,`${p}@ticker`]).join('/');
   const streamKey=`combined:${streams}`;
-  if(PRICE_WS&&PRICE_WS_KEY===streamKey&&(PRICE_WS.readyState===WebSocket.OPEN||PRICE_WS.readyState===WebSocket.CONNECTING)){
+  if(!force&&PRICE_WS&&PRICE_WS_KEY===streamKey&&(PRICE_WS.readyState===WebSocket.OPEN||PRICE_WS.readyState===WebSocket.CONNECTING)){
     return;
   }
   closePriceWS();
   PRICE_WS_MANUAL=false;
   wsMode='combined';
-  lastWsTickAt=0;
+  lastWsTickAt=Date.now();
   PRICE_WS_KEY=streamKey;
   const url=`wss://fstream.binance.com/stream?streams=${streams}`;
   PRICE_WS=new WebSocket(url);
   PRICE_WS.onopen=()=>{
     setLiveText(`WS 成交流推送 · ${pairs.length} 幣`);
     setTimeout(()=>{
-      if(liveOn&&PRICE_WS&&lastWsTickAt===0&&mode==='combined'){
+      if(liveOn&&PRICE_WS&&Date.now()-lastWsTickAt>4300&&mode==='combined'){
         setLiveText(`WS 成交流等待中 · ${pairs.length} 幣`);
       }
     },4500);
@@ -2451,6 +2564,10 @@ function connectPriceWS(mode='combined'){
         }
         if(d.e==='24hrTicker'||d.c!==undefined){
           updateLiveChange(sym,Number(d.P));
+          const price=Number(d.c);
+          if(Number.isFinite(price)&&(!lastTradeTicks[sym]||Date.now()-lastTradeTicks[sym]>1800)){
+            updateLivePrice(sym,price,'Ticker過渡');
+          }
         }
       });
     }catch(e){}
@@ -2459,7 +2576,7 @@ function connectPriceWS(mode='combined'){
     if(!PRICE_WS_MANUAL&&liveOn){
       setLiveText('WS 重連中');
       clearTimeout(PRICE_WS_TIMER);
-      PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined'),2200);
+      PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2200);
     }
   };
   PRICE_WS.onerror=()=>{
@@ -2520,7 +2637,7 @@ async function tickPrices(){
   try{
     if(liveOn&&(!PRICE_WS||PRICE_WS.readyState===WebSocket.CLOSED||Date.now()-lastWsTickAt>12000)){
       if(!PRICE_WS||PRICE_WS.readyState===WebSocket.CLOSED) setLiveText('WS 重連中');
-      connectPriceWS('combined');
+      connectPriceWS('combined',true);
       return;
     }
   }catch(e){
@@ -2535,7 +2652,7 @@ async function tickRescan(){
   await doScan(true); // true = 靜默模式，不改按鈕文字
 }
 
-const PRICE_INTERVAL=1000;      // 每秒檢查 WS；必要時用 REST 即時價格備援
+const PRICE_INTERVAL=1000;      // 每秒檢查 WS；價格由成交/ticker 推送更新
 const RESCAN_INTERVAL=60000;    // 完整掃描每 60 秒
 
 function startLive(){
