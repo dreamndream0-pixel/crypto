@@ -102,8 +102,17 @@
   .rec-info .k{font-size:9px;color:var(--dimmer);letter-spacing:1px;margin-bottom:4px;font-family:'Chakra Petch',monospace;}
   .rec-info .v{font-size:12px;color:var(--text);font-family:'Chakra Petch',monospace;}
   .rec-votes{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+  .report-grid{display:grid;grid-template-columns:repeat(7,minmax(110px,1fr));gap:8px;}
+  .report-card{background:linear-gradient(180deg,rgba(17,21,31,.95),rgba(13,17,25,.96));border:1px solid var(--line);border-radius:9px;padding:10px;}
+  .report-title{font-size:10px;color:var(--dimmer);letter-spacing:1px;font-family:'Chakra Petch',monospace;margin-bottom:6px;}
+  .report-win{font-size:20px;font-weight:800;font-family:'Chakra Petch',monospace;color:var(--cyan);line-height:1;}
+  .report-meta{font-size:10px;color:var(--dim);font-family:'Chakra Petch',monospace;margin-top:7px;line-height:1.45;}
+  .watch-row{display:grid;grid-template-columns:minmax(100px,.8fr) minmax(120px,1fr) minmax(120px,1fr) 34px;gap:9px;align-items:center;border-top:1px solid var(--line);padding:10px 14px;}
+  .watch-row:hover{background:rgba(255,255,255,.025);}
+  .watch-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
   @media(max-width:900px){.rec-detail-grid{grid-template-columns:1fr 1fr;}.rec-head{grid-template-columns:1fr 1fr 1fr!important;}}
-  @media(max-width:560px){.rec-detail-grid{grid-template-columns:1fr;}.rec-head{grid-template-columns:1fr 1fr!important;}}
+  @media(max-width:1100px){.report-grid{grid-template-columns:repeat(3,minmax(0,1fr));}.watch-row{grid-template-columns:1fr 1fr;}}
+  @media(max-width:560px){.rec-detail-grid{grid-template-columns:1fr;}.rec-head{grid-template-columns:1fr 1fr!important;}.report-grid{grid-template-columns:1fr;}.watch-row{grid-template-columns:1fr;}}
 
   .verdict{margin:0 14px 14px;background:linear-gradient(160deg,var(--panel-2),var(--panel));border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
   .v-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:10px;}
@@ -221,6 +230,16 @@
       <span id="recsUpdatedAt" style="margin-left:auto;font-size:11px;color:var(--green);font-family:'Chakra Petch',monospace">等待即時更新</span>
     </div>
     <div class="panel-box">
+      <div id="recsReport" style="padding:14px;border-bottom:1px solid var(--line);background:var(--panel-2)"></div>
+      <div style="padding:14px;border-bottom:1px solid var(--line);background:rgba(54,226,226,.035)">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <div class="mono" style="font-size:12px;font-weight:700;color:var(--cyan)">追蹤幣別</div>
+          <input class="key-input" id="watchSymbol" placeholder="輸入想觀察的幣，例如 BTC、SOL" style="min-width:220px;flex:0 1 280px;padding:9px 12px">
+          <input class="key-input" id="watchNote" placeholder="備註：等待回踩、等突破、想下單再加入戰績" style="min-width:260px;flex:1;padding:9px 12px">
+          <button class="btn" id="watchAdd" style="padding:9px 14px;font-size:12px">＋ 加入追蹤</button>
+        </div>
+        <div id="watchBody"></div>
+      </div>
       <div id="recsBody"></div>
     </div>
   </div>
@@ -682,7 +701,10 @@ function coinHTML(c,type){
       <div>新聞筆數：${MARKET_CONTEXT?.news?.length??0}</div>
       <div>熱門幣資料：${MARKET_CONTEXT?.trendingCoins?.length??0} 筆</div>
     </div>
-    <button class="btn analyze-btn" data-sym="${c.sym}" style="width:100%;padding:8px;font-size:11px">▸ 啟動 9 位 AI 討論</button>
+    <div class="watch-actions">
+      <button class="btn analyze-btn" data-sym="${c.sym}" style="flex:1;min-width:180px;padding:8px;font-size:11px">▸ 啟動 9 位 AI 討論</button>
+      <button class="btn ghost watch-quick-btn" data-sym="${c.sym}" style="flex:0 0 auto;padding:8px 12px;font-size:11px">＋ 追蹤幣別</button>
+    </div>
   </div>`;
 
   if(type==='alert'){
@@ -744,6 +766,14 @@ function renderScan(){
     btn.addEventListener('click',(e)=>{
       e.stopPropagation();
       analyze(btn.getAttribute('data-sym'));
+    });
+  });
+  document.querySelectorAll('.watch-quick-btn').forEach(btn=>{
+    btn.addEventListener('click',async(e)=>{
+      e.stopPropagation();
+      await addWatchSymbol(btn.getAttribute('data-sym'),'從掃描清單加入，等待交易計畫');
+      btn.textContent='✓ 已追蹤';
+      setTimeout(()=>btn.textContent='＋ 追蹤幣別',1200);
     });
   });
 }
@@ -936,7 +966,8 @@ function renderPlan(r,curPrice,sym,memory=null){
   const tpPct=((r.takeProfit-r.entry)/r.entry*100).toFixed(1);
   const recId='pr_'+sym+'_'+Date.now()+'_'+Math.random().toString(36).slice(2,5);
   PENDING_RECS[recId]={sym,verdict:r.verdict,entry:r.entry,stopLoss:r.stopLoss,takeProfit:r.takeProfit,rr:r.rr,
-    priceAtRec:curPrice,confidence:r.confidence,time:Date.now(),memory};
+    priceAtRec:curPrice,confidence:r.confidence,time:Date.now(),memory,
+    history:[{time:Date.now(),price:curPrice,pct:0,state:'進行中'}]};
   return `<div style="background:linear-gradient(160deg,var(--panel-2),var(--panel));border:1px solid ${dirColor};border-radius:10px;padding:14px;margin-bottom:12px;font-family:'Chakra Petch',monospace">
     <div style="font-size:11px;color:var(--dimmer);letter-spacing:1px;margin-bottom:8px">🎯 交易計畫 · TRADE PLAN</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px 16px;font-size:12px;margin-bottom:14px">
@@ -1350,6 +1381,7 @@ updateModeUI();
 
 // ---------- 推薦記錄（雲端 KV）----------
 let RECS=[];
+let WATCHLIST=[];
 const OPEN_REC_IDS=new Set();
 let recSyncBusy=false;
 async function saveRec(rec){
@@ -1411,6 +1443,91 @@ async function deleteRec(id){
   }catch(e){ console.warn('刪除戰績失敗',e); }
 }
 
+function normalizeWatchSymbol(value){
+  return String(value||'').toUpperCase().replace(/USDT$/,'').replace(/[^A-Z0-9]/g,'').slice(0,20);
+}
+
+async function loadWatchlist(){
+  try{
+    if(!ACCESS_TOKEN){ WATCHLIST=[]; renderWatchlist(); return; }
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=getWatchlist',{
+      headers:{'X-Access-Token':ACCESS_TOKEN}
+    });
+    if(!res.ok){ WATCHLIST=[]; renderWatchlist(); return; }
+    const d=await res.json();
+    WATCHLIST=d.watchlist||[];
+    renderWatchlist();
+  }catch(e){ renderWatchlist(); }
+}
+
+async function addWatchSymbol(sym,note=''){
+  if(!ACCESS_TOKEN){ flash('請先設定存取密碼','err'); return; }
+  sym=normalizeWatchSymbol(sym);
+  if(!/^[A-Z0-9]{2,20}$/.test(sym)){ flash('追蹤幣別格式不正確','err'); return; }
+  const item={id:sym,sym,note,createdAt:Date.now(),updatedAt:Date.now()};
+  WATCHLIST=[item,...WATCHLIST.filter(w=>normalizeWatchSymbol(w.sym)!==sym)].slice(0,100);
+  renderWatchlist();
+  try{
+    await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=saveWatch',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Access-Token':ACCESS_TOKEN},
+      body:JSON.stringify(item)
+    });
+    await loadWatchlist();
+  }catch(e){ console.warn('儲存追蹤幣別失敗',e); }
+}
+
+async function deleteWatchSymbol(sym){
+  if(!ACCESS_TOKEN) return;
+  sym=normalizeWatchSymbol(sym);
+  WATCHLIST=WATCHLIST.filter(w=>normalizeWatchSymbol(w.sym)!==sym);
+  renderWatchlist();
+  try{
+    await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=deleteWatch',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Access-Token':ACCESS_TOKEN},
+      body:JSON.stringify({sym})
+    });
+  }catch(e){ console.warn('刪除追蹤幣別失敗',e); }
+}
+
+function renderWatchlist(){
+  const box=$('watchBody');
+  if(!box) return;
+  if(WATCHLIST.length===0){
+    box.innerHTML='<div style="font-size:11px;color:var(--dimmer);padding:8px 0">尚無待觀察幣別。這裡適合放「想追蹤但還沒下單」的幣，等有交易計畫時再加入戰績追蹤。</div>';
+    return;
+  }
+  const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c);
+  box.innerHTML=WATCHLIST.map(w=>{
+    if(typeof w==='string') w={sym:w,note:''};
+    const sym=normalizeWatchSymbol(w.sym||w.id);
+    const c=priceMap[sym];
+    const t=w.createdAt?new Date(w.createdAt).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
+    return `<div class="watch-row" data-watch-sym="${esc(sym)}">
+      <div><span class="mono" style="font-weight:800;color:var(--text)">${esc(sym)}</span><div style="font-size:10px;color:var(--dimmer)">加入 ${t}</div></div>
+      <div class="mono" style="font-size:11px;color:var(--dim)">現價 ${c?'$'+c.price:'—'} · 24h ${c?((c.chg24>0?'+':'')+c.chg24+'%'):'—'}</div>
+      <div style="font-size:11px;color:var(--dim);line-height:1.5">${esc(w.note||'等待下單決策')}</div>
+      <button class="btn ghost watch-delete" data-watch-sym="${esc(sym)}" title="移除追蹤" style="padding:4px 8px;font-size:12px">×</button>
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.watch-row').forEach(row=>{
+    row.addEventListener('click',(e)=>{
+      if(e.target.classList.contains('watch-delete')) return;
+      const sym=row.getAttribute('data-watch-sym');
+      const found=[...(SCREENED.long||[]),...(SCREENED.short||[]),...(SCREENED.alert||[])].find(c=>c.sym===sym);
+      if(found) analyze(sym);
+      else flash(`${sym} 目前不在本輪掃描候選，等下一輪掃描或手動輸入到追蹤即可保留`,'ok');
+    });
+  });
+  document.querySelectorAll('.watch-delete').forEach(btn=>{
+    btn.addEventListener('click',(e)=>{
+      e.stopPropagation();
+      deleteWatchSymbol(btn.getAttribute('data-watch-sym'));
+    });
+  });
+}
+
 // 計算每筆推薦的當下表現
 function recStatus(rec,curPrice){
   if(!curPrice||!rec.entry) return {pct:null,state:'—',color:'var(--dim)'};
@@ -1441,12 +1558,17 @@ function refreshRecsWithPrices(priceMap,{sync=false}={}){
     if(!cur||!rec.entry) return rec;
     const st=recStatus({...rec,status:rec.status||'進行中'},cur);
     const next={...rec,lastPrice:cur,lastPct:st.pct,lastCheckedAt:Date.now()};
+    const lastHist=Array.isArray(rec.history)&&rec.history.length?rec.history[rec.history.length-1]:null;
+    const shouldSample=!lastHist||Date.now()-Number(lastHist.time||0)>5*60*1000||st.state==='已止盈'||st.state==='已止損';
+    if(shouldSample){
+      next.history=[...(Array.isArray(rec.history)?rec.history:[]),{time:Date.now(),price:cur,pct:st.pct,state:st.state}].slice(-288);
+    }
     if((!rec.status||rec.status==='進行中')&&(st.state==='已止盈'||st.state==='已止損')){
       next.status=st.state;
       next.closePrice=cur;
       next.closePct=st.pct;
       next.closedAt=Date.now();
-      updates.push({id:rec.id,status:st.state,closePrice:cur,closePct:st.pct,closedAt:next.closedAt,lastPrice:cur,lastPct:st.pct,lastCheckedAt:next.lastCheckedAt});
+      updates.push({id:rec.id,status:st.state,closePrice:cur,closePct:st.pct,closedAt:next.closedAt,lastPrice:cur,lastPct:st.pct,lastCheckedAt:next.lastCheckedAt,history:next.history});
     }
     return next;
   });
@@ -1454,10 +1576,50 @@ function refreshRecsWithPrices(priceMap,{sync=false}={}){
   return updates;
 }
 
+function closedRecsInPeriod(days){
+  const cutoff=Date.now()-days*24*60*60*1000;
+  return RECS.filter(rec=>(rec.status==='已止盈'||rec.status==='已止損')&&Number(rec.closedAt||rec.time||0)>=cutoff);
+}
+
+function renderRecsReport(){
+  const box=$('recsReport');
+  if(!box) return '';
+  const periods=[
+    ['1天',1],['一週',7],['2週',14],['一個月',30],['3個月',90],['半年',180],['一年',365]
+  ];
+  const html=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <div class="mono" style="font-size:12px;font-weight:700;color:var(--cyan)">戰績報表</div>
+    <div style="font-size:10px;color:var(--dimmer)">只統計已止盈 / 已止損；進行中不納入勝率</div>
+  </div>
+  <div class="report-grid">${periods.map(([label,days])=>{
+    const rows=closedRecsInPeriod(days);
+    const wins=rows.filter(r=>r.status==='已止盈').length;
+    const losses=rows.filter(r=>r.status==='已止損').length;
+    const total=wins+losses;
+    const wr=total?Math.round(wins/total*100):null;
+    const avg=total?+(rows.reduce((s,r)=>s+Number(r.closePct||0),0)/total).toFixed(2):null;
+    const color=wr===null?'var(--dimmer)':wr>=60?'var(--green)':wr>=45?'var(--amber)':'var(--red)';
+    return `<div class="report-card">
+      <div class="report-title">${label}</div>
+      <div class="report-win" style="color:${color}">${wr===null?'—':wr+'%'}</div>
+      <div class="report-meta">結算 ${total} 筆<br>止盈 ${wins} · 止損 ${losses}<br>平均 ${avg===null?'—':(avg>0?'+':'')+avg+'%'}</div>
+    </div>`;
+  }).join('')}</div>`;
+  box.innerHTML=html;
+  return html;
+}
+
 function renderRecs(){
   const box=$('recsBody');
   if(!box) return;
-  if(RECS.length===0){ box.innerHTML='<div style="padding:18px;text-align:center;color:var(--dimmer);font-size:12px">尚無推薦記錄。點幣討論或評選 Top 3，有方向的裁決會自動記錄在這裡。</div>'; return; }
+  renderRecsReport();
+  renderWatchlist();
+  if(RECS.length===0){
+    $('recsStat').textContent='已結算 0 筆 · 勝率 —';
+    if($('recsUpdatedAt')) $('recsUpdatedAt').textContent='即時更新 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+    box.innerHTML='<div style="padding:18px;text-align:center;color:var(--dimmer);font-size:12px">尚無推薦記錄。點幣討論或評選 Top 3，有方向的裁決會自動記錄在這裡。</div>';
+    return;
+  }
   // 用目前 MKT 的最新價算表現
   const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c.price);
   refreshRecsWithPrices(priceMap);
@@ -1498,6 +1660,12 @@ function renderRecDetail(rec){
   const votes=(rec.memory?.agentVotes||[]).map(v=>`<span class="chip" style="margin:3px">${esc(v.name)} ${labelMap[v.verdict]||v.verdict} ${Number(v.confidence||0)}%</span>`).join('');
   const market=rec.memory?.market;
   const smc=market?.technical?.smc;
+  const history=Array.isArray(rec.history)?rec.history.slice(-8):[];
+  const historyRows=history.map(h=>{
+    const t=h.time?new Date(h.time).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
+    const pct=h.pct!==null&&h.pct!==undefined?`${Number(h.pct)>0?'+':''}${h.pct}%`:'—';
+    return `<span class="chip" style="margin:3px">${t} · $${h.price??'—'} · ${pct}</span>`;
+  }).join('');
   return `<div style="border-top:1px dashed var(--line);padding-top:12px">
     <div class="rec-detail-grid">
       <div class="rec-info"><div class="k">止損</div><div class="v" style="color:var(--red)">$${rec.stopLoss}</div></div>
@@ -1515,6 +1683,8 @@ function renderRecDetail(rec){
     </div>
     <div style="margin-top:10px;color:var(--text);font-weight:700">分析師投票</div>
     <div class="rec-votes">${votes||'<span style="color:var(--dimmer)">此筆舊記錄沒有分析師投票記憶</span>'}</div>
+    <div style="margin-top:10px;color:var(--text);font-weight:700">歷史價格軌跡</div>
+    <div class="rec-votes">${historyRows||'<span style="color:var(--dimmer)">等待下一次即時更新寫入歷史軌跡</span>'}</div>
   </div>`;
 }
 
@@ -1559,6 +1729,7 @@ function renderMemoryPanel(){
 }
 // 啟動時載入一次記錄
 loadRecs();
+loadWatchlist();
 
 // 存取密碼
 $('accessToken').value=ACCESS_TOKEN;
@@ -1566,7 +1737,17 @@ $('tokenSave').addEventListener('click',()=>{
   ACCESS_TOKEN=$('accessToken').value.trim();
   try{ localStorage.setItem('accessToken',ACCESS_TOKEN); }catch(e){}
   flash(ACCESS_TOKEN?'✓ 密碼已儲存':'⚠ 密碼已清空','ok');
-  if(ACCESS_TOKEN) loadRecs();
+  if(ACCESS_TOKEN){ loadRecs(); loadWatchlist(); }
+});
+$('watchAdd').addEventListener('click',async()=>{
+  const sym=$('watchSymbol').value;
+  const note=$('watchNote').value;
+  await addWatchSymbol(sym,note);
+  $('watchSymbol').value='';
+  $('watchNote').value='';
+});
+$('watchSymbol').addEventListener('keydown',e=>{
+  if(e.key==='Enter') $('watchAdd').click();
 });
 function flash(msg,type){
   const e=$('errBox');e.style.display='block';e.textContent=msg;
