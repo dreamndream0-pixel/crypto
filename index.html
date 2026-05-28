@@ -950,6 +950,9 @@ function renderAllCoinList(){
 
 const KLINE_CACHE=new Map();
 let CURRENT_CHART={sym:null,pair:null,interval:'5m'};
+let PRICE_WS=null,PRICE_WS_TIMER=null,PRICE_WS_MANUAL=false;
+let CHART_WS=null,CHART_WS_MANUAL=false;
+let lastRecRenderAt=0;
 
 async function fetchKlines(pair,interval='5m',limit=80){
   const key=`${pair}:${interval}:${limit}`;
@@ -979,10 +982,12 @@ async function openKlineModal(sym,pair,interval='5m'){
     btn.classList.toggle('active',btn.getAttribute('data-modal-interval')===interval);
   });
   await loadModalChart(true);
+  connectChartWS();
 }
 
 function closeKlineModal(){
   $('klineModal').classList.remove('show');
+  closeChartWS();
 }
 
 async function loadModalChart(force=false){
@@ -994,10 +999,50 @@ async function loadModalChart(force=false){
     if(meta) meta.textContent=`${interval} 載入中...`;
     if(force) KLINE_CACHE.delete(`${pair}:${interval}:80`);
     const rows=await fetchKlines(pair,interval,80);
+    CURRENT_CHART.rows=rows;
     drawKline(canvas,rows,{sym,interval});
   }catch(e){
     if(meta) meta.textContent=e.message||'K線載入失敗';
   }
+}
+
+function connectChartWS(){
+  closeChartWS();
+  const {sym,pair,interval}=CURRENT_CHART;
+  if(!sym||!pair) return;
+  CHART_WS_MANUAL=false;
+  const stream=`${pair.toLowerCase()}@kline_${interval}`;
+  CHART_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${stream}`);
+  CHART_WS.onmessage=(event)=>{
+    try{
+      const msg=JSON.parse(event.data);
+      const k=msg.data?.k;
+      if(!k) return;
+      const row={time:Number(k.t),open:Number(k.o),high:Number(k.h),low:Number(k.l),close:Number(k.c),volume:Number(k.v)};
+      if(!Array.isArray(CURRENT_CHART.rows)) CURRENT_CHART.rows=[];
+      const rows=CURRENT_CHART.rows;
+      const last=rows[rows.length-1];
+      if(last&&last.time===row.time) rows[rows.length-1]=row;
+      else rows.push(row);
+      CURRENT_CHART.rows=rows.slice(-80);
+      updateLivePrice(sym,row.close);
+      if(!CURRENT_CHART.lastDraw||Date.now()-CURRENT_CHART.lastDraw>=900){
+        CURRENT_CHART.lastDraw=Date.now();
+        drawKline($('modalChartCanvas'),CURRENT_CHART.rows,{sym,interval});
+      }
+    }catch(e){}
+  };
+  CHART_WS.onclose=()=>{
+    if(!CHART_WS_MANUAL&&$('klineModal')?.classList.contains('show')){
+      setTimeout(connectChartWS,1800);
+    }
+  };
+}
+
+function closeChartWS(){
+  CHART_WS_MANUAL=true;
+  if(CHART_WS){try{CHART_WS.close();}catch(e){}}
+  CHART_WS=null;
 }
 
 function drawKline(canvas,rows,{sym,interval}={}){
@@ -1126,6 +1171,7 @@ async function doScan(silent=false){
     MKT=enriched;
     SCREENED=screen(MKT);
     renderScan();
+    if(liveOn) connectPriceWS();
     showStatus(`⚡ 自動模式啟用 · 上次掃描 ${new Date().toLocaleTimeString('zh-TW',{hour12:false})}`);
   }catch(e){
     if(!silent){
@@ -2172,6 +2218,63 @@ function flash(msg,type){
 let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0;
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 
+function connectPriceWS(){
+  closePriceWS();
+  const pairs=[...new Set(MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase()))];
+  if(pairs.length===0) return;
+  PRICE_WS_MANUAL=false;
+  const streams=pairs.map(p=>`${p}@markPrice@1s`).join('/');
+  PRICE_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
+  PRICE_WS.onopen=()=>{
+    if($('liveText')) $('liveText').textContent=`WebSocket 即時跳動 · ${pairs.length} 幣`;
+  };
+  PRICE_WS.onmessage=(event)=>{
+    try{
+      const msg=JSON.parse(event.data);
+      const d=msg.data||{};
+      const sym=String(d.s||'').replace('USDT','');
+      const price=Number(d.p);
+      if(sym&&Number.isFinite(price)) updateLivePrice(sym,price);
+    }catch(e){}
+  };
+  PRICE_WS.onclose=()=>{
+    if(!PRICE_WS_MANUAL&&liveOn){
+      clearTimeout(PRICE_WS_TIMER);
+      PRICE_WS_TIMER=setTimeout(connectPriceWS,2200);
+    }
+  };
+  PRICE_WS.onerror=()=>{ try{PRICE_WS.close();}catch(e){} };
+}
+
+function closePriceWS(){
+  PRICE_WS_MANUAL=true;
+  clearTimeout(PRICE_WS_TIMER);
+  if(PRICE_WS){try{PRICE_WS.close();}catch(e){}}
+  PRICE_WS=null;
+}
+
+function updateLivePrice(sym,price){
+  const old=lastPrices[sym];
+  document.querySelectorAll(`[data-price-sym="${sym}"]`).forEach(el=>{
+    el.textContent='$'+formatPrice(price);
+    if(old!==undefined&&price!==old){
+      el.classList.remove('flash-up','flash-dn');
+      void el.offsetWidth;
+      el.classList.add(price>old?'flash-up':'flash-dn');
+    }
+  });
+  lastPrices[sym]=price;
+  const idx=MKT.findIndex(x=>x.sym===sym);
+  if(idx>=0) MKT[idx].price=price;
+  if(RECS.length>0&&Date.now()-lastRecRenderAt>1600){
+    const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c.price);
+    refreshRecsWithPrices(priceMap,{sync:true});
+    renderRecs();
+    lastRecRenderAt=Date.now();
+  }
+  if($('liveText')) $('liveText').textContent='WebSocket 即時跳動 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+}
+
 // 輕量：只更新已顯示幣的價格與漲跌
 async function tickPrices(){
   if(document.hidden) return; // 分頁在背景時跳過，省請求
@@ -2224,7 +2327,7 @@ async function tickRescan(){
   await doScan(true); // true = 靜默模式，不改按鈕文字
 }
 
-const PRICE_INTERVAL=5000;      // 價格每 5 秒（輕量）
+const PRICE_INTERVAL=15000;     // REST 備援校準；即時價格由 WebSocket 每秒推送
 const RESCAN_INTERVAL=60000;    // 完整掃描每 60 秒
 
 function startLive(){
@@ -2234,16 +2337,18 @@ function startLive(){
   $('liveStatus').style.display='inline-flex';
   // 立刻掃一次
   doScan(true).catch(()=>{});
+  connectPriceWS();
   tickPrices();
   priceTimer=setInterval(tickPrices,PRICE_INTERVAL);
   rescanTimer=setInterval(tickRescan,RESCAN_INTERVAL);
-  $('scanStatus').textContent='⚡ 自動模式啟用：每 5 秒更新價格，每 60 秒完整重掃';
+  $('scanStatus').textContent='⚡ 自動模式啟用：WebSocket 每秒跳動，REST 每 15 秒校準，每 60 秒完整重掃';
 }
 function stopLive(){
   liveOn=false;
   $('autoToggle').textContent='▶ 開啟自動掃描';
   $('autoToggle').classList.remove('ghost');
   $('liveStatus').style.display='none';
+  closePriceWS();
   clearInterval(priceTimer);clearInterval(rescanTimer);
   $('scanStatus').textContent='';
 }
@@ -2261,7 +2366,7 @@ document.querySelectorAll('[data-modal-interval]').forEach(btn=>{
   btn.addEventListener('click',()=>{
     CURRENT_CHART.interval=btn.getAttribute('data-modal-interval')||'5m';
     document.querySelectorAll('[data-modal-interval]').forEach(x=>x.classList.toggle('active',x===btn));
-    loadModalChart(true);
+    loadModalChart(true).then(connectChartWS);
   });
 });
 window.addEventListener('resize',()=>{
