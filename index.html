@@ -2383,8 +2383,8 @@ function connectPriceWS(mode='combined'){
     }catch(e){}
   };
   PRICE_WS.onclose=()=>{
-    setLiveText('WS 重連中');
     if(!PRICE_WS_MANUAL&&liveOn){
+      setLiveText('WS 重連中');
       clearTimeout(PRICE_WS_TIMER);
       PRICE_WS_TIMER=setTimeout(()=>connectPriceWS(wsMode==='combined'?'all':'combined'),2200);
     }
@@ -2398,7 +2398,13 @@ function connectPriceWS(mode='combined'){
 function closePriceWS(){
   PRICE_WS_MANUAL=true;
   clearTimeout(PRICE_WS_TIMER);
-  if(PRICE_WS){try{PRICE_WS.close();}catch(e){}}
+  if(PRICE_WS){
+    try{
+      PRICE_WS.onclose=null;
+      PRICE_WS.onerror=null;
+      PRICE_WS.close();
+    }catch(e){}
+  }
   PRICE_WS=null;
 }
 
@@ -2421,7 +2427,6 @@ function updateLivePrice(sym,price,source='WS'){
     renderRecs();
     lastRecRenderAt=Date.now();
   }
-  if(source==='REST備援') setLiveText('REST 備援更新中');
 }
 
 function updateLiveChange(sym,chg24){
@@ -2444,7 +2449,7 @@ async function tickPrices(){
       Object.entries(d.prices||{}).forEach(([sym,price])=>{
         if(Number.isFinite(Number(price))) updateLivePrice(sym,Number(price),'REST備援');
       });
-      setLiveText('REST 備援更新中');
+      if(!PRICE_WS) setLiveText('REST 備援連線中');
       return;
     }
     const market=await fetchMarket();
@@ -2473,7 +2478,7 @@ async function tickPrices(){
       el.className='chip '+(c.chg24>=0?'chg-up':'chg-dn');
       el.setAttribute('data-chg-sym',sym);
     });
-    if(!PRICE_WS) setLiveText('REST 校準更新中');
+    if(!PRICE_WS) setLiveText('REST 備援連線中');
     // 用最新價更新 MKT 價格，順便刷新戰績損益
     market.forEach(c=>{ const idx=MKT.findIndex(x=>x.sym===c.symbol); if(idx>=0) MKT[idx].price=c.price; });
     if(RECS.length>0){
