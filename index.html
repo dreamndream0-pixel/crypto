@@ -654,29 +654,73 @@ function finalModelConfig(){
   return {provider:'groq',model:MODEL};
 }
 
+function providerRoute(provider){
+  if(provider==='openai') return {provider,model:localStorage.getItem('openaiFinalModel')||'gpt-5'};
+  if(provider==='anthropic') return {provider,model:localStorage.getItem('anthropicFinalModel')||'claude-3-5-sonnet-latest'};
+  if(provider==='gemini') return {provider,model:localStorage.getItem('geminiFinalModel')||'gemini-2.5-flash'};
+  return {provider:'groq',model:MODEL};
+}
+
+function aiRoutes(route=null){
+  const first=route||providerRoute($('finalProvider')?.value||'groq');
+  const order=[first.provider,'gemini','openai','anthropic','groq'].filter((v,i,a)=>v&&a.indexOf(v)===i);
+  return order.map(providerRoute);
+}
+
+function providerName(provider){
+  return {groq:'Groq',gemini:'Gemini',openai:'OpenAI/GPT',anthropic:'Claude'}[provider]||provider;
+}
+
+function isGroqBlockedText(text){
+  return /User location is not supported|FAILED_PRECONDITION|location is not supported/i.test(String(text||''));
+}
+
 async function groq(system,user,retries=3,route=null){
   if(!ACCESS_TOKEN) throw new Error('尚未設定存取密碼');
-  const provider=route?.provider||'groq';
-  const model=route?.model||MODEL;
-  const endpoint=provider==='groq'?'groq':'ai';
-  for(let attempt=0;attempt<=retries;attempt++){
-    const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=${endpoint}`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','X-Access-Token':ACCESS_TOKEN},
-      body:JSON.stringify({provider,model,messages:[{role:'system',content:system},{role:'user',content:user}],temperature:0.6,response_format:{type:'json_object'}})
-    });
-    if(res.ok) return (await res.json()).choices[0].message.content;
-    if(res.status===401) throw new Error('密碼錯誤，請重新設定');
-    if(res.status===429 && attempt<retries){
-      // 速率限制：等待後重試（指數退避：3s → 7s → 15s）
-      const wait=[3000,7000,15000][attempt];
-      await sleep(wait);
-      continue;
+  const errors=[];
+  for(const current of aiRoutes(route)){
+    const provider=current.provider||'groq';
+    const model=current.model||MODEL;
+    const endpoint=provider==='groq'?'groq':'ai';
+    for(let attempt=0;attempt<=retries;attempt++){
+      const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=${endpoint}`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-Access-Token':ACCESS_TOKEN},
+        body:JSON.stringify({provider,model,messages:[{role:'system',content:system},{role:'user',content:user}],temperature:0.6,response_format:{type:'json_object'}})
+      });
+      if(res.ok){
+        const data=await res.json();
+        const content=data?.choices?.[0]?.message?.content;
+        if(content) return content;
+        errors.push(`${providerName(provider)} 回應格式異常`);
+        break;
+      }
+      if(res.status===401) throw new Error('密碼錯誤，請重新設定');
+      const t=await res.text();
+      if(res.status===429 && attempt<retries){
+        const wait=[3000,7000,15000][attempt];
+        await sleep(wait);
+        continue;
+      }
+      if(provider==='groq'&&isGroqBlockedText(t)){
+        errors.push('Groq 目前地區不支援，已自動改用備援模型');
+        break;
+      }
+      errors.push(`${providerName(provider)} ${res.status}: ${readableAIError(t)}`);
+      break;
     }
-    const t=await res.text();
-    throw new Error('Groq '+res.status+': '+t.slice(0,160));
   }
-  throw new Error('Groq 重試多次後仍失敗');
+  throw new Error('AI 模型全部無法連線：'+errors.slice(-4).join(' / '));
+}
+
+function readableAIError(text){
+  if(isGroqBlockedText(text)) return '目前地區不支援 Groq API，請改用 Gemini / OpenAI / Claude';
+  try{
+    const j=JSON.parse(text);
+    return String(j.error?.message||j.message||text).slice(0,180);
+  }catch(e){
+    return String(text||'未知錯誤').slice(0,180);
+  }
 }
 function pj(t){t=t.replace(/```json/g,'').replace(/```/g,'').trim();const s=t.indexOf('{'),e=t.lastIndexOf('}');if(s>=0)t=t.slice(s,e+1);return JSON.parse(t);}
 
