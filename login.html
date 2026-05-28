@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>管理員登入 · 分析師軍團</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+  :root{--bg:#06080d;--panel:#0d1119;--panel-2:#11151f;--line:#1c2230;--green:#2bd97a;--red:#ff4d5e;--cyan:#36e2e2;--text:#e6ebf2;--dim:#8a93a6;--dimmer:#525c6e;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{min-height:100vh;background:radial-gradient(circle at 20% 10%,rgba(54,226,226,.08),transparent 38%),radial-gradient(circle at 80% 90%,rgba(43,217,122,.07),transparent 42%),var(--bg);color:var(--text);font-family:'Noto Sans TC',sans-serif;display:grid;place-items:center;padding:24px;}
+  .card{width:min(440px,94vw);background:linear-gradient(180deg,rgba(17,21,31,.96),rgba(13,17,25,.98));border:1px solid var(--line);border-radius:16px;box-shadow:0 24px 80px rgba(0,0,0,.45);overflow:hidden;}
+  .head{padding:24px 24px 18px;border-bottom:1px solid var(--line);}
+  .logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--cyan),var(--green));display:grid;place-items:center;font-weight:900;color:#04140f;font-family:'Chakra Petch',monospace;margin-bottom:14px;box-shadow:0 0 28px rgba(54,226,226,.3);}
+  h1{font-size:21px;line-height:1.2;margin-bottom:7px;}
+  .sub{font-family:'Chakra Petch',monospace;font-size:11px;color:var(--dim);letter-spacing:1px;}
+  .body{padding:22px 24px 24px;}
+  label{display:block;font-size:11px;color:var(--dimmer);letter-spacing:1px;margin:0 0 7px;font-family:'Chakra Petch',monospace;}
+  input{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:13px 14px;border-radius:10px;font-size:14px;font-family:'Chakra Petch',monospace;margin-bottom:14px;}
+  input:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 0 3px rgba(54,226,226,.08);}
+  button{width:100%;font-family:'Chakra Petch',monospace;background:linear-gradient(135deg,var(--cyan),var(--green));color:#04140f;border:none;padding:13px 18px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;letter-spacing:1px;margin-top:4px;}
+  button:disabled{opacity:.45;cursor:not-allowed;}
+  .msg{display:none;margin-top:14px;border:1px solid var(--red);background:rgba(255,77,94,.1);color:var(--red);padding:10px 12px;border-radius:9px;font-size:12px;line-height:1.5;}
+  .msg.ok{border-color:var(--green);background:rgba(43,217,122,.1);color:var(--green);}
+  .note{margin-top:15px;color:var(--dimmer);font-size:11px;line-height:1.7;}
+  .mono{font-family:'Chakra Petch',monospace;}
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="head">
+      <div class="logo">A</div>
+      <h1>管理員登入</h1>
+      <div class="sub">SCANNER + COUNCIL · SECURE SESSION</div>
+    </div>
+    <div class="body">
+      <label for="username">ADMIN USER</label>
+      <input id="username" autocomplete="username" placeholder="admin">
+      <label for="password">PASSWORD</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="輸入管理員密碼">
+      <button id="loginBtn">登入系統</button>
+      <div class="msg" id="msg"></div>
+      <div class="note">
+        登入成功後才會進入資料頁。連續登入失敗會由 Worker 暫時鎖定來源，API key 仍只保存在 Worker 後端環境變數。
+      </div>
+    </div>
+  </main>
+<script>
+let PROXY_URL = localStorage.getItem('proxyUrl') || 'https://binance-proxy.dreamndream0.workers.dev';
+const $=id=>document.getElementById(id);
+function sessionPayload(token){
+  try{
+    const payload=String(token||'').split('.')[0];
+    const b64=payload.replace(/-/g,'+').replace(/_/g,'/');
+    return JSON.parse(decodeURIComponent(escape(atob(b64))));
+  }catch(e){return null;}
+}
+function sessionValid(){
+  const p=sessionPayload(localStorage.getItem('sessionToken'));
+  return !!(p&&p.role==='admin'&&Number(p.exp)>Date.now());
+}
+function show(msg,ok=false){
+  const box=$('msg');
+  box.style.display='block';
+  box.textContent=msg;
+  box.className='msg'+(ok?' ok':'');
+}
+if(sessionValid()) location.href='index.html';
+$('username').value=localStorage.getItem('adminUser')||'admin';
+$('password').focus();
+$('loginBtn').addEventListener('click',login);
+$('password').addEventListener('keydown',e=>{if(e.key==='Enter') login();});
+async function login(){
+  const username=$('username').value.trim()||'admin';
+  const password=$('password').value;
+  if(!password){show('請輸入密碼');return;}
+  $('loginBtn').disabled=true;
+  $('loginBtn').textContent='登入中...';
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username,password})
+    });
+    const d=await res.json();
+    if(!res.ok||!d.token) throw new Error(d.error||'登入失敗');
+    localStorage.setItem('sessionToken',d.token);
+    localStorage.setItem('adminUser',username);
+    localStorage.removeItem('accessToken');
+    show('登入成功，正在進入系統...',true);
+    setTimeout(()=>location.href='index.html',350);
+  }catch(e){
+    show(e.message||'登入失敗');
+    $('loginBtn').disabled=false;
+    $('loginBtn').textContent='登入系統';
+  }
+}
+</script>
+</body>
+</html>
