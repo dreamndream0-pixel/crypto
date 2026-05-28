@@ -174,9 +174,9 @@
       <option value="standard" selected>標準：9位一輪</option>
       <option value="full">完整：9位兩輪+Top3深挖</option>
     </select>
-    <select class="mode-select" id="finalProvider" title="總指揮模型">
-      <option value="groq" selected>裁決 Groq</option>
-      <option value="gemini">裁決 Gemini</option>
+    <select class="mode-select" id="finalProvider" title="總指揮模型：固定 Gemini，分析師固定 Groq">
+      <option value="groq">裁決 Groq</option>
+      <option value="gemini" selected>裁決 Gemini</option>
       <option value="openai">裁決 OpenAI/GPT</option>
       <option value="anthropic">裁決 Claude</option>
     </select>
@@ -604,9 +604,8 @@ function activeAgents(){
 }
 function updateModeUI(){
   const mode=getMode();
-  const provider=$('finalProvider')?.value||'groq';
-  let tip=`${mode.hint} · 裁決:${provider}`;
-  if(provider==='gemini') tip+=' · 分析師走 Flash-Lite，每步間隔4.5秒避免撞免費限制（較慢但穩）';
+  const provider='gemini';
+  let tip=`${mode.hint} · 分析師:Groq · 總整理:${provider}`;
   if($('modeHint')) $('modeHint').textContent=tip;
   if($('rankLabel')) $('rankLabel').textContent=`Top 3 評選 · ${mode.label}模式 · ${activeAgents().length} 位分析師打分`;
 }
@@ -694,11 +693,7 @@ function marketBrief(c){
 }
 
 function finalModelConfig(){
-  const provider=$('finalProvider')?.value||'groq';
-  if(provider==='openai') return {provider,model:localStorage.getItem('openaiFinalModel')||'gpt-5'};
-  if(provider==='anthropic') return {provider,model:localStorage.getItem('anthropicFinalModel')||'claude-3-5-sonnet-latest'};
-  if(provider==='gemini') return {provider,model:localStorage.getItem('geminiFinalModel')||'gemini-2.5-flash'};
-  return {provider:'groq',model:MODEL};
+  return {provider:'gemini',model:localStorage.getItem('geminiFinalModel')||'gemini-2.5-flash',noFallback:true};
 }
 
 function providerRoute(provider){
@@ -709,16 +704,15 @@ function providerRoute(provider){
 }
 
 function aiRoutes(route=null){
-  const first=route||providerRoute($('finalProvider')?.value||'groq');
+  if(route?.noFallback) return [route];
+  const first=route||providerRoute($('finalProvider')?.value||'gemini');
   const order=[first.provider,'gemini','openai','anthropic','groq'].filter((v,i,a)=>v&&a.indexOf(v)===i);
   return order.map(providerRoute);
 }
 
-// 分析師專用路由：Gemini 時改用 Flash-Lite（15 RPM、每天1000次，比 Flash 寬鬆），省額度給裁決用 Flash
+// 分析師專用路由：前面討論固定走 Groq；Gemini 只留給總指揮裁決/總整理，避免消耗過快
 function analystRoute(){
-  const provider=$('finalProvider')?.value||'groq';
-  if(provider==='gemini') return {provider:'gemini',model:'gemini-2.5-flash-lite'};
-  return providerRoute(provider);
+  return {provider:'groq',model:MODEL,noFallback:true};
 }
 
 function providerName(provider){
@@ -1203,7 +1197,7 @@ async function analyze(sym){
       }
       step++;
       setProgress('pbStatus',step,totalSteps,`第一輪完成 ${step}/${totalSteps}`);
-      await sleep(4500);
+      await sleep(400);
     }
     const board=agents.map(a=>`${a.name}:${labelMap[R1[a.id].verdict]}(${R1[a.id].confidence}%)-${R1[a.id].reason}`).join('\n');
     if(mode.secondRound){
@@ -1224,7 +1218,7 @@ async function analyze(sym){
         }catch(e){R2[a.id]={...R1[a.id],changed:false};}
         step++;
         setProgress('pbStatus',step,totalSteps,`第二輪完成 ${step}/${totalSteps}`);
-        await sleep(4500);
+        await sleep(400);
       }
     }else{
       R2={...R1};
@@ -1558,7 +1552,7 @@ async function autoDeepDive(top3){
     const sym=top3[i];
     const medal=i===0?'🥇':i===1?'🥈':'🥉';
     await deepDiveCard(sym,medal,host);
-    await sleep(4500);
+    await sleep(700);
   }
 }
 
@@ -1630,7 +1624,7 @@ async function deepDiveCard(sym,medal,host){
         paintLocal(a.id,'hold',50,'⚠ '+msg,false,null);
       }
       step++;
-      await sleep(4500);
+      await sleep(400);
     }
     await sleep(500);
     const board=agents.map(a=>`${a.name}:${labelMap[r1[a.id].verdict]}(${r1[a.id].confidence}%)-${r1[a.id].reason}`).join('\n');
@@ -1649,7 +1643,7 @@ async function deepDiveCard(sym,medal,host){
           paintLocal(a.id,v,r2[a.id].confidence,r2[a.id].reason,ch,{data:r2[a.id].dataUsed,triggers:r2[a.id].triggers});
         }catch(e){r2[a.id]={...r1[a.id],changed:false};}
         step++;
-        await sleep(4500);
+        await sleep(400);
       }
     }else{
       Object.assign(r2,r1);
@@ -1687,13 +1681,14 @@ $('analysisMode').addEventListener('change',()=>{
   updateModeUI();
 });
 $('finalProvider').addEventListener('change',()=>{
-  try{ localStorage.setItem('finalProvider',$('finalProvider').value); }catch(e){}
+  $('finalProvider').value='gemini';
+  try{ localStorage.setItem('finalProvider','gemini'); }catch(e){}
   updateModeUI();
 });
 const savedMode=localStorage.getItem('analysisMode');
 if(savedMode&&MODES[savedMode]) $('analysisMode').value=savedMode;
-const savedProvider=localStorage.getItem('finalProvider');
-if(savedProvider&&['groq','gemini','openai','anthropic'].includes(savedProvider)) $('finalProvider').value=savedProvider;
+$('finalProvider').value='gemini';
+try{ localStorage.setItem('finalProvider','gemini'); }catch(e){}
 updateModeUI();
 
 // ---------- 推薦記錄（雲端 KV）----------
