@@ -1202,7 +1202,7 @@ async function doScan(silent=false){
     SCREENED=screen(MKT);
     renderScan();
     if(liveOn) connectPriceWS();
-    showStatus(`⚡ 自動模式啟用 · 上次掃描 ${new Date().toLocaleTimeString('zh-TW',{hour12:false})}`);
+    showStatus('⚡ 自動模式啟用：價格即時推送，背景定期重掃');
   }catch(e){
     if(!silent){
       $('errBox').style.display='block';
@@ -2245,12 +2245,19 @@ function flash(msg,type){
 // ---------- 即時更新 ----------
 let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0, lastWsTickAt=0, wsMode='combined';
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
+let liveTextState='';
+
+function setLiveText(text){
+  if(text===liveTextState) return;
+  liveTextState=text;
+  if($('liveText')) $('liveText').textContent=text;
+}
 
 function connectPriceWS(mode='combined'){
   closePriceWS();
   const pairs=[...new Set(MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase()))];
   if(pairs.length===0){
-    if($('liveText')) $('liveText').textContent='WebSocket 等待掃描清單';
+    setLiveText('等待掃描清單');
     return;
   }
   PRICE_WS_MANUAL=false;
@@ -2262,10 +2269,10 @@ function connectPriceWS(mode='combined'){
     : `wss://fstream.binance.com/stream?streams=${streams}`;
   PRICE_WS=new WebSocket(url);
   PRICE_WS.onopen=()=>{
-    if($('liveText')) $('liveText').textContent=`WS 已連線(${mode==='all'?'全市場':'清單'}) · ${pairs.length} 幣 · `+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+    setLiveText(`WS 即時連線 · ${mode==='all'?'全市場':'清單'} · ${pairs.length} 幣`);
     setTimeout(()=>{
       if(liveOn&&PRICE_WS&&lastWsTickAt===0&&mode==='combined'){
-        if($('liveText')) $('liveText').textContent='WS 清單無資料，切換全市場串流...';
+        setLiveText('WS 切換全市場串流');
         connectPriceWS('all');
       }
     },4500);
@@ -2286,14 +2293,14 @@ function connectPriceWS(mode='combined'){
     }catch(e){}
   };
   PRICE_WS.onclose=()=>{
-    if($('liveText')) $('liveText').textContent='WS 斷線，準備重連...';
+    setLiveText('WS 重連中');
     if(!PRICE_WS_MANUAL&&liveOn){
       clearTimeout(PRICE_WS_TIMER);
       PRICE_WS_TIMER=setTimeout(()=>connectPriceWS(wsMode==='combined'?'all':'combined'),2200);
     }
   };
   PRICE_WS.onerror=()=>{
-    if($('liveText')) $('liveText').textContent='WS 錯誤，使用 REST 備援';
+    setLiveText('WS 錯誤 · REST 備援');
     try{PRICE_WS.close();}catch(e){}
   };
 }
@@ -2324,7 +2331,7 @@ function updateLivePrice(sym,price,source='WS'){
     renderRecs();
     lastRecRenderAt=Date.now();
   }
-  if($('liveText')) $('liveText').textContent=`${source} 即時跳動 · `+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+  if(source==='REST備援') setLiveText('REST 備援更新中');
 }
 
 function updateLiveChange(sym,chg24){
@@ -2347,7 +2354,7 @@ async function tickPrices(){
       Object.entries(d.prices||{}).forEach(([sym,price])=>{
         if(Number.isFinite(Number(price))) updateLivePrice(sym,Number(price),'REST備援');
       });
-      if($('liveText')) $('liveText').textContent='REST 每秒備援 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+      setLiveText('REST 備援更新中');
       return;
     }
     const market=await fetchMarket();
@@ -2376,7 +2383,7 @@ async function tickPrices(){
       el.className='chip '+(c.chg24>=0?'chg-up':'chg-dn');
       el.setAttribute('data-chg-sym',sym);
     });
-    $('liveText').textContent='即時更新中 · '+new Date().toLocaleTimeString('zh-TW',{hour12:false});
+    if(!PRICE_WS) setLiveText('REST 校準更新中');
     // 用最新價更新 MKT 價格，順便刷新戰績損益
     market.forEach(c=>{ const idx=MKT.findIndex(x=>x.sym===c.symbol); if(idx>=0) MKT[idx].price=c.price; });
     if(RECS.length>0){
@@ -2389,7 +2396,7 @@ async function tickPrices(){
       if($('klineModal')?.classList.contains('show')) loadModalChart(true);
     }
   }catch(e){
-    if($('liveText')&&liveOn&&!PRICE_WS) $('liveText').textContent='REST 備援失敗，等待下次更新';
+    if(liveOn&&!PRICE_WS) setLiveText('REST 備援等待中');
   }
 }
 
@@ -2414,7 +2421,8 @@ function startLive(){
   tickPrices();
   priceTimer=setInterval(tickPrices,PRICE_INTERVAL);
   rescanTimer=setInterval(tickRescan,RESCAN_INTERVAL);
-  $('scanStatus').textContent='⚡ 自動模式啟用：WebSocket 每秒跳動，WS 無資料時 REST 每秒備援，每 60 秒完整重掃';
+  setLiveText('即時更新啟用');
+  $('scanStatus').textContent='⚡ 自動模式啟用：價格與K線即時更新，背景定期校準與重掃';
 }
 function stopLive(){
   liveOn=false;
