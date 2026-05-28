@@ -292,10 +292,18 @@
       <div class="kline-head">
         <div class="kline-title" id="modalChartTitle">即時K線</div>
         <div class="kline-tabs">
+          <button class="kline-tab" data-modal-interval="1s">1s</button>
+          <button class="kline-tab" data-modal-interval="30s">30s</button>
           <button class="kline-tab" data-modal-interval="1m">1m</button>
           <button class="kline-tab active" data-modal-interval="5m">5m</button>
           <button class="kline-tab" data-modal-interval="15m">15m</button>
           <button class="kline-tab" data-modal-interval="1h">1h</button>
+          <button class="kline-tab" data-modal-interval="4h">4h</button>
+          <button class="kline-tab" data-modal-interval="12h">12h</button>
+          <button class="kline-tab" data-modal-interval="1d">1d</button>
+          <button class="kline-tab" data-modal-interval="3d">3d</button>
+          <button class="kline-tab" data-modal-interval="7d">7d</button>
+          <button class="kline-tab" data-modal-interval="1M">1M</button>
         </div>
         <div class="kline-meta" id="modalChartMeta">等待載入</div>
         <button class="icon-btn" id="klineClose" title="關閉">×</button>
@@ -974,7 +982,32 @@ function renderAllCoinList(){
 }
 
 const KLINE_CACHE=new Map();
-let CURRENT_CHART={sym:null,pair:null,interval:'5m'};
+let CURRENT_CHART={sym:null,pair:null,interval:'5m',synthetic:false,rows:[]};
+
+function isSyntheticInterval(interval){
+  return interval==='1s'||interval==='30s';
+}
+
+function binanceInterval(interval){
+  if(interval==='7d') return '1w';
+  return interval;
+}
+
+function intervalMs(interval){
+  if(interval==='1s') return 1000;
+  if(interval==='30s') return 30000;
+  if(interval==='1m') return 60000;
+  if(interval==='5m') return 300000;
+  if(interval==='15m') return 900000;
+  if(interval==='1h') return 3600000;
+  if(interval==='4h') return 14400000;
+  if(interval==='12h') return 43200000;
+  if(interval==='1d') return 86400000;
+  if(interval==='3d') return 259200000;
+  if(interval==='7d') return 604800000;
+  if(interval==='1M') return 2592000000;
+  return 60000;
+}
 let PRICE_WS=null,PRICE_WS_TIMER=null,PRICE_WS_MANUAL=false;
 let CHART_WS=null,CHART_WS_MANUAL=false;
 let lastRecRenderAt=0;
@@ -983,7 +1016,8 @@ async function fetchKlines(pair,interval='5m',limit=80){
   const key=`${pair}:${interval}:${limit}`;
   const cached=KLINE_CACHE.get(key);
   if(cached&&Date.now()-cached.time<20*1000) return cached.rows;
-  const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=klines&symbol=${pair}&interval=${interval}&limit=${limit}`);
+  const apiInterval=binanceInterval(interval);
+  const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=klines&symbol=${pair}&interval=${apiInterval}&limit=${limit}`);
   if(!res.ok) throw new Error('K線資料載入失敗');
   const raw=await res.json();
   if(!Array.isArray(raw)) throw new Error(raw?.error||'K線資料格式錯誤');
@@ -1000,7 +1034,7 @@ async function fetchKlines(pair,interval='5m',limit=80){
 }
 
 async function openKlineModal(sym,pair,interval='5m'){
-  CURRENT_CHART={sym,pair:pair||`${sym}USDT`,interval};
+  CURRENT_CHART={sym,pair:pair||`${sym}USDT`,interval,synthetic:isSyntheticInterval(interval),rows:[]};
   $('modalChartTitle').textContent=`${sym} / USDT 即時K線`;
   $('klineModal').classList.add('show');
   document.querySelectorAll('[data-modal-interval]').forEach(btn=>{
@@ -1022,6 +1056,19 @@ async function loadModalChart(force=false){
   const canvas=$('modalChartCanvas');
   try{
     if(meta) meta.textContent=`${interval} 載入中...`;
+    if(isSyntheticInterval(interval)){
+      const seed=await fetchKlines(pair,'1m',30);
+      const now=Date.now();
+      const basePrice=seed.at(-1)?.close||MKT.find(c=>c.sym===sym)?.price||0;
+      const step=intervalMs(interval);
+      const count=interval==='1s'?60:80;
+      CURRENT_CHART.rows=Array.from({length:count},(_,i)=>{
+        const time=Math.floor((now-(count-i)*step)/step)*step;
+        return {time,open:basePrice,high:basePrice,low:basePrice,close:basePrice,volume:0};
+      });
+      drawKline(canvas,CURRENT_CHART.rows,{sym,interval});
+      return;
+    }
     if(force) KLINE_CACHE.delete(`${pair}:${interval}:80`);
     const rows=await fetchKlines(pair,interval,80);
     CURRENT_CHART.rows=rows;
@@ -1036,14 +1083,22 @@ function connectChartWS(){
   const {sym,pair,interval}=CURRENT_CHART;
   if(!sym||!pair) return;
   CHART_WS_MANUAL=false;
-  const stream=`${pair.toLowerCase()}@kline_${interval}`;
+  const stream=isSyntheticInterval(interval)?`${pair.toLowerCase()}@aggTrade`:`${pair.toLowerCase()}@kline_${binanceInterval(interval)}`;
   CHART_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${stream}`);
   CHART_WS.onopen=()=>{
-    if($('modalChartMeta')) $('modalChartMeta').textContent=`${interval} · WS 即時K線已連線`;
+    if($('modalChartMeta')) $('modalChartMeta').textContent=`${interval} · ${isSyntheticInterval(interval)?'成交合成K線':'WS 即時K線'}已連線`;
   };
   CHART_WS.onmessage=(event)=>{
     try{
       const msg=JSON.parse(event.data);
+      if(isSyntheticInterval(interval)){
+        const d=msg.data||{};
+        const price=Number(d.p);
+        const qty=Number(d.q||0);
+        const ts=Number(d.T||Date.now());
+        if(Number.isFinite(price)) updateSyntheticCandle(sym,interval,price,qty,ts);
+        return;
+      }
       const k=msg.data?.k;
       if(!k) return;
       const row={time:Number(k.t),open:Number(k.o),high:Number(k.h),low:Number(k.l),close:Number(k.c),volume:Number(k.v)};
@@ -1075,8 +1130,31 @@ function closeChartWS(){
   CHART_WS=null;
 }
 
+function updateSyntheticCandle(sym,interval,price,qty,ts){
+  const step=intervalMs(interval);
+  const bucket=Math.floor(ts/step)*step;
+  let rows=Array.isArray(CURRENT_CHART.rows)?CURRENT_CHART.rows:[];
+  let last=rows[rows.length-1];
+  if(!last||last.time!==bucket){
+    rows.push({time:bucket,open:last?last.close:price,high:price,low:price,close:price,volume:qty||0});
+  }else{
+    last.high=Math.max(last.high,price);
+    last.low=Math.min(last.low,price);
+    last.close=price;
+    last.volume=(last.volume||0)+(qty||0);
+  }
+  CURRENT_CHART.rows=rows.slice(-80);
+  updateLivePrice(sym,price);
+  if(!CURRENT_CHART.lastDraw||Date.now()-CURRENT_CHART.lastDraw>=180){
+    CURRENT_CHART.lastDraw=Date.now();
+    drawKline($('modalChartCanvas'),CURRENT_CHART.rows,{sym,interval});
+  }
+}
+
 function drawKline(canvas,rows,{sym,interval}={}){
   if(!canvas||!rows||rows.length<5) return;
+  rows=rows.filter(r=>Number.isFinite(r.open)&&Number.isFinite(r.high)&&Number.isFinite(r.low)&&Number.isFinite(r.close));
+  if(rows.length<5) return;
   const box=canvas.closest('.kline-box');
   const meta=box?.querySelector('.kline-meta');
   const rect=canvas.getBoundingClientRect();
@@ -2245,6 +2323,7 @@ function flash(msg,type){
 // ---------- 即時更新 ----------
 let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0, lastWsTickAt=0, wsMode='combined';
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
+let lastTradeTicks={}; // 成交流最後更新時間，用來避免 ticker 覆蓋實時成交價
 let liveTextState='';
 
 function setLiveText(text){
@@ -2263,13 +2342,13 @@ function connectPriceWS(mode='combined'){
   PRICE_WS_MANUAL=false;
   wsMode=mode;
   lastWsTickAt=0;
-  const streams=pairs.map(p=>`${p}@ticker`).join('/');
+  const streams=pairs.flatMap(p=>[`${p}@aggTrade`,`${p}@ticker`]).join('/');
   const url=mode==='all'
     ? 'wss://fstream.binance.com/ws/!ticker@arr'
     : `wss://fstream.binance.com/stream?streams=${streams}`;
   PRICE_WS=new WebSocket(url);
   PRICE_WS.onopen=()=>{
-    setLiveText(`WS 即時連線 · ${mode==='all'?'全市場':'清單'} · ${pairs.length} 幣`);
+    setLiveText(`WS 即時連線 · ${mode==='all'?'全市場Ticker備援':'成交流'} · ${pairs.length} 幣`);
     setTimeout(()=>{
       if(liveOn&&PRICE_WS&&lastWsTickAt===0&&mode==='combined'){
         setLiveText('WS 切換全市場串流');
@@ -2284,10 +2363,21 @@ function connectPriceWS(mode='combined'){
       lastWsTickAt=Date.now();
       payload.forEach(d=>{
         const sym=String(d.s||'').replace('USDT','');
-        const price=Number(d.c);
-        if(sym&&Number.isFinite(price)){
-          updateLivePrice(sym,price,'WS');
+        if(!sym) return;
+        if(d.e==='aggTrade'||(d.a!==undefined&&d.p!==undefined&&d.q!==undefined&&d.m!==undefined)){
+          const price=Number(d.p);
+          if(Number.isFinite(price)){
+            lastTradeTicks[sym]=Date.now();
+            updateLivePrice(sym,price,'成交');
+          }
+          return;
+        }
+        if(d.e==='24hrTicker'||d.c!==undefined){
+          const price=Number(d.c);
           updateLiveChange(sym,Number(d.P));
+          if(Number.isFinite(price)&&(!lastTradeTicks[sym]||Date.now()-lastTradeTicks[sym]>2500)){
+            updateLivePrice(sym,price,mode==='all'?'Ticker備援':'Ticker校準');
+          }
         }
       });
     }catch(e){}
@@ -2449,6 +2539,9 @@ $('klineModal').addEventListener('click',e=>{
 document.querySelectorAll('[data-modal-interval]').forEach(btn=>{
   btn.addEventListener('click',()=>{
     CURRENT_CHART.interval=btn.getAttribute('data-modal-interval')||'5m';
+    CURRENT_CHART.synthetic=isSyntheticInterval(CURRENT_CHART.interval);
+    CURRENT_CHART.rows=[];
+    CURRENT_CHART.lastDraw=0;
     document.querySelectorAll('[data-modal-interval]').forEach(x=>x.classList.toggle('active',x===btn));
     loadModalChart(true).then(connectChartWS);
   });
