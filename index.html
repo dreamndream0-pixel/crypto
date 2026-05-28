@@ -605,7 +605,9 @@ function activeAgents(){
 function updateModeUI(){
   const mode=getMode();
   const provider=$('finalProvider')?.value||'groq';
-  if($('modeHint')) $('modeHint').textContent=`${mode.hint} · 裁決:${provider}`;
+  let tip=`${mode.hint} · 裁決:${provider}`;
+  if(provider==='gemini') tip+=' · 分析師走 Flash-Lite，每步間隔4.5秒避免撞免費限制（較慢但穩）';
+  if($('modeHint')) $('modeHint').textContent=tip;
   if($('rankLabel')) $('rankLabel').textContent=`Top 3 評選 · ${mode.label}模式 · ${activeAgents().length} 位分析師打分`;
 }
 function setProgress(elId,done,total,label){
@@ -712,6 +714,13 @@ function aiRoutes(route=null){
   return order.map(providerRoute);
 }
 
+// 分析師專用路由：Gemini 時改用 Flash-Lite（15 RPM、每天1000次，比 Flash 寬鬆），省額度給裁決用 Flash
+function analystRoute(){
+  const provider=$('finalProvider')?.value||'groq';
+  if(provider==='gemini') return {provider:'gemini',model:'gemini-2.5-flash-lite'};
+  return providerRoute(provider);
+}
+
 function providerName(provider){
   return {groq:'Groq',gemini:'Gemini',openai:'OpenAI/GPT',anthropic:'Claude'}[provider]||provider;
 }
@@ -767,7 +776,20 @@ function readableAIError(text){
     return String(text||'未知錯誤').slice(0,180);
   }
 }
-function pj(t){t=t.replace(/```json/g,'').replace(/```/g,'').trim();const s=t.indexOf('{'),e=t.lastIndexOf('}');if(s>=0)t=t.slice(s,e+1);return JSON.parse(t);}
+function pj(t){
+  if(!t) throw new Error('AI 回傳空白');
+  let s=t.replace(/```json/gi,'').replace(/```/g,'').trim();
+  // 取第一個 { 到最後一個 }
+  const a=s.indexOf('{'),b=s.lastIndexOf('}');
+  if(a>=0&&b>a) s=s.slice(a,b+1);
+  try{ return JSON.parse(s); }
+  catch(e){
+    // 二次嘗試：修常見問題（中文引號、結尾逗號、單引號）
+    let fixed=s.replace(/[""]/g,'"').replace(/['']/g,"'").replace(/,\s*([}\]])/g,'$1');
+    try{ return JSON.parse(fixed); }
+    catch(e2){ throw new Error('JSON解析失敗(模型回傳格式不對)'); }
+  }
+}
 
 // ---------- render scan ----------
 let SIGNAL_TAB=localStorage.getItem('signalTab')||'long';
@@ -1169,15 +1191,19 @@ async function analyze(sym){
         `"reason":"繁中2-3句完整推理,必須從你流派角度",`+
         `"dataUsed":"具體列出用了哪些數據及數值(例:RSI=28、5m+3.5%、OI+12%、資金費率-0.02%)",`+
         `"triggers":"哪些指標變化觸發判斷(例:RSI跌破30=超賣訊號)"}`;
-      try{const r=pj(await groq(sys,`${sym} 結構化市場資料：\n${dataStr}`));
+      try{const r=pj(await groq(sys,`${sym} 結構化市場資料：\n${dataStr}`,3,analystRoute()));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
         R1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—',
           dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
         paint(a.id,v,R1[a.id].confidence,R1[a.id].reason,false,{data:R1[a.id].dataUsed,triggers:R1[a.id].triggers});
-      }catch(e){R1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paint(a.id,'hold',50,'(分析失敗)',false,null);}
+      }catch(e){
+        const msg=String(e.message||e).slice(0,80);
+        R1[a.id]={verdict:'hold',confidence:50,reason:'分析失敗：'+msg};
+        paint(a.id,'hold',50,'⚠ '+msg,false,null);
+      }
       step++;
       setProgress('pbStatus',step,totalSteps,`第一輪完成 ${step}/${totalSteps}`);
-      await sleep(400);
+      await sleep(4500);
     }
     const board=agents.map(a=>`${a.name}:${labelMap[R1[a.id].verdict]}(${R1[a.id].confidence}%)-${R1[a.id].reason}`).join('\n');
     if(mode.secondRound){
@@ -1189,7 +1215,7 @@ async function analyze(sym){
           `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,`+
           `"reason":"繁中2-3句:堅持或改變的理由,可點名其他流派",`+
           `"dataUsed":"重新權衡用到的數據及數值","triggers":"哪些觀點/指標讓你改變或更堅定"}`;
-        try{const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n全場意見:\n${board}\n你原本:${labelMap[R1[a.id].verdict]}`));
+        try{const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n全場意見:\n${board}\n你原本:${labelMap[R1[a.id].verdict]}`,3,analystRoute()));
           const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:R1[a.id].verdict;
           const ch=v!==R1[a.id].verdict;
           R2[a.id]={verdict:v,confidence:r.confidence||R1[a.id].confidence,reason:r.reason||'—',changed:ch,
@@ -1198,7 +1224,7 @@ async function analyze(sym){
         }catch(e){R2[a.id]={...R1[a.id],changed:false};}
         step++;
         setProgress('pbStatus',step,totalSteps,`第二輪完成 ${step}/${totalSteps}`);
-        await sleep(400);
+        await sleep(4500);
       }
     }else{
       R2={...R1};
@@ -1419,7 +1445,7 @@ async function rankTop3(){
       `從你的流派角度，為每支候選幣評「勝率分數」(0-100)：越符合你流派的進場條件、訊號越明確、風險報酬比越好，分數越高。`+
       `只回JSON:{"scores":{"幣代號":分數,...},"selfConf":你對自己這次評分的信心0-100}。所有候選幣都要給分。`;
     try{
-      const r=pj(await groq(sys,`候選池:\n${poolStr}\n\n請為這些幣評勝率分數:${symbols.join(',')}`));
+      const r=pj(await groq(sys,`候選池:\n${poolStr}\n\n請為這些幣評勝率分數:${symbols.join(',')}`,3,analystRoute()));
       const hist=agentWinrate(a.id);
       const w=((r.selfConf||60)/100)*(hist===null?1:(0.75+hist*0.5));
       symbols.forEach(s=>{
@@ -1532,7 +1558,7 @@ async function autoDeepDive(top3){
     const sym=top3[i];
     const medal=i===0?'🥇':i===1?'🥈':'🥉';
     await deepDiveCard(sym,medal,host);
-    await sleep(400);
+    await sleep(4500);
   }
 }
 
@@ -1594,13 +1620,17 @@ async function deepDiveCard(sym,medal,host){
       const sys=agentRolePrompt(a)+`\n`+
         `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整推理",`+
         `"dataUsed":"列出具體用的數據及數值","triggers":"哪些指標變化觸發判斷"}`;
-      try{const r=pj(await groq(sys,`${sym} 結構化市場資料：\n${dataStr}`));
+      try{const r=pj(await groq(sys,`${sym} 結構化市場資料：\n${dataStr}`,3,analystRoute()));
         const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
         r1[a.id]={verdict:v,confidence:r.confidence||50,reason:r.reason||'—',dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
         paintLocal(a.id,v,r1[a.id].confidence,r1[a.id].reason,false,{data:r1[a.id].dataUsed,triggers:r1[a.id].triggers});
-      }catch(e){r1[a.id]={verdict:'hold',confidence:50,reason:'(失敗)'};paintLocal(a.id,'hold',50,'(分析失敗)',false,null);}
+      }catch(e){
+        const msg=String(e.message||e).slice(0,80);
+        r1[a.id]={verdict:'hold',confidence:50,reason:'分析失敗：'+msg};
+        paintLocal(a.id,'hold',50,'⚠ '+msg,false,null);
+      }
       step++;
-      await sleep(400);
+      await sleep(4500);
     }
     await sleep(500);
     const board=agents.map(a=>`${a.name}:${labelMap[r1[a.id].verdict]}(${r1[a.id].confidence}%)-${r1[a.id].reason}`).join('\n');
@@ -1611,7 +1641,7 @@ async function deepDiveCard(sym,medal,host){
           `你已看全場第一輪意見,從你流派角度重新判斷:堅持或修正?`+
           `回JSON:{"verdict":"buy/sell/hold","confidence":0-100,"reason":"繁中2-3句完整理由",`+
           `"dataUsed":"重新權衡用到的數據","triggers":"哪些觀點或指標讓你改變/更堅定"}`;
-        try{const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n全場:\n${board}\n你原本:${labelMap[r1[a.id].verdict]}`));
+        try{const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n全場:\n${board}\n你原本:${labelMap[r1[a.id].verdict]}`,3,analystRoute()));
           const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:r1[a.id].verdict;
           const ch=v!==r1[a.id].verdict;
           r2[a.id]={verdict:v,confidence:r.confidence||r1[a.id].confidence,reason:r.reason||'—',changed:ch,
@@ -1619,7 +1649,7 @@ async function deepDiveCard(sym,medal,host){
           paintLocal(a.id,v,r2[a.id].confidence,r2[a.id].reason,ch,{data:r2[a.id].dataUsed,triggers:r2[a.id].triggers});
         }catch(e){r2[a.id]={...r1[a.id],changed:false};}
         step++;
-        await sleep(400);
+        await sleep(4500);
       }
     }else{
       Object.assign(r2,r1);
