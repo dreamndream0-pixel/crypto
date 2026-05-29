@@ -87,6 +87,16 @@
   .alert-metrics .k{font-size:9px;color:var(--dimmer);letter-spacing:.5px;}
   .alert-metrics .v{font-size:13px;font-weight:900;color:var(--text);}
   .alert-reason{font-size:10px;color:var(--dim);line-height:1.45;margin-top:8px;}
+  .alert-card-detail{display:none;border-top:1px dashed var(--line);margin-top:10px;padding-top:10px;}
+  .alert-card.open .alert-card-detail{display:block;}
+  .alert-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;color:var(--dim);font-family:'Chakra Petch',monospace;font-size:11px;}
+  .alert-card-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+  .track-list{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) var(--panel);}
+  .track-card{padding:12px 14px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(17,21,31,.72),rgba(13,17,25,.9));}
+  .track-card:last-child{border-bottom:none;}
+  .track-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+  .track-sym{font-family:'Chakra Petch',monospace;font-size:15px;font-weight:900;}
+  .track-meta{display:grid;grid-template-columns:1fr 1fr;gap:7px;font-family:'Chakra Petch',monospace;font-size:11px;color:var(--dim);margin-bottom:10px;}
   #panelOi .alert-board,#panelOi .single-panel{height:var(--oi-panel-height,560px);min-height:360px;}
   #panelOi .alert-board{display:flex;flex-direction:column;position:sticky;top:70px;}
   #panelOi .alert-board-grid{flex:1;min-height:0;}
@@ -94,7 +104,6 @@
   #panelOi .alert-card-list{flex:1;max-height:none;min-height:0;}
   #panelOi .single-panel{display:flex;flex-direction:column;}
   #panelOi .col.alert{height:100%;display:flex;flex-direction:column;border:none;}
-  #panelOi #listAlert{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) var(--panel);}
   .oi-resize-handle{height:18px;margin:8px 0 0;border:1px solid var(--line);border-radius:999px;background:var(--panel);display:flex;align-items:center;justify-content:center;cursor:ns-resize;touch-action:none;}
   .oi-resize-handle::before{content:"";width:76px;height:4px;border-radius:999px;background:linear-gradient(90deg,var(--cyan),var(--green));opacity:.65;}
   .oi-resize-handle:hover::before{opacity:1;}
@@ -305,14 +314,10 @@
         <div class="single-panel">
           <div class="col alert">
             <div class="col-head">
-              ⚡ 警報記錄
-              <span class="cnt" id="cntAlert">0</span>
-              <div class="seg">
-                <button class="seg-btn active long" data-alert-tab="long">看漲</button>
-                <button class="seg-btn short" data-alert-tab="short">看跌</button>
-              </div>
+              ⚡ 持倉異常追蹤
+              <span class="cnt" id="cntAlertTrack">0</span>
             </div>
-            <div id="listAlert"></div>
+            <div id="alertTrackList" class="track-list"></div>
           </div>
         </div>
       </div>
@@ -807,6 +812,28 @@ function alertDismissSave(){
   try{ localStorage.setItem('dismissedAlerts',JSON.stringify([...ALERT_DISMISSED].slice(-500))); }catch(e){}
 }
 
+function alertTracksLoad(){
+  try{
+    const rows=JSON.parse(localStorage.getItem('alertTracks')||'[]');
+    return Array.isArray(rows)?rows:[];
+  }catch(e){ return []; }
+}
+
+function alertTracksSave(){
+  try{ localStorage.setItem('alertTracks',JSON.stringify((ALERT_TRACKS||[]).slice(0,160))); }catch(e){}
+}
+
+function alertOpenLoad(){
+  try{
+    const rows=JSON.parse(localStorage.getItem('openAlertCards')||'[]');
+    return new Set(Array.isArray(rows)?rows:[]);
+  }catch(e){ return new Set(); }
+}
+
+function alertOpenSave(){
+  try{ localStorage.setItem('openAlertCards',JSON.stringify([...ALERT_OPEN_IDS].slice(-120))); }catch(e){}
+}
+
 function alertPerf(row,price=null){
   const p=Number(price??row.currentPrice??row.price);
   const base=Number(row.alertPrice);
@@ -835,6 +862,64 @@ function dismissAlert(alertId){
   renderScan();
 }
 
+function isAlertTracked(alertId){
+  return (ALERT_TRACKS||[]).some(t=>t.alertId===alertId);
+}
+
+function addAlertTrack(alertId){
+  const found=ALERT_LOG.find(r=>r.alertId===alertId);
+  if(!found) return;
+  const row=hydrateAlertRecord(found);
+  if(!row?.alertId) return;
+  const item={
+    trackId:'at_'+row.alertId,
+    alertId:row.alertId,
+    sym:row.sym,
+    dir:row.dir,
+    alertPrice:row.alertPrice,
+    addedAt:Date.now(),
+    note:row.recommendationReason||row.type||'持倉異常追蹤'
+  };
+  ALERT_TRACKS=[item,...ALERT_TRACKS.filter(t=>t.alertId!==row.alertId)].slice(0,160);
+  alertTracksSave();
+  renderAlertBoard();
+  renderAlertTracks();
+  flash(`${row.sym} 已加入持倉異常追蹤`,'ok');
+}
+
+function removeAlertTrack(trackId){
+  ALERT_TRACKS=ALERT_TRACKS.filter(t=>t.trackId!==trackId);
+  alertTracksSave();
+  renderAlertTracks();
+  renderAlertBoard();
+}
+
+function alertDetailHTML(row){
+  const pct=alertPerf(row,row.currentPrice??row.price);
+  const c=MKT.find(x=>x.sym===row.sym)||row;
+  const color=row.dir==='up'?'var(--green)':'var(--red)';
+  const tracked=isAlertTracked(row.alertId);
+  return `<div class="alert-detail-grid">
+    <div>方向：<span style="color:${color}">${esc(row.recommendation||'—')}</span></div>
+    <div>警報後：<span data-alert-perf-sym="${esc(row.sym)}" data-alert-perf-id="${esc(row.alertId)}">${pct===null?'—':(pct>0?'+':'')+pct+'%'}</span></div>
+    <div>24h：<span data-live-sym="${esc(row.sym)}" data-live="chg24">${signedPct(c.chg24)}</span></div>
+    <div>5m / 15m：<span data-live-sym="${esc(row.sym)}" data-live="chg5m">${signedPct(c.chg5m)}</span> / <span data-live-sym="${esc(row.sym)}" data-live="chg15m">${signedPct(c.chg15m)}</span></div>
+    <div>RSI：<span data-live-sym="${esc(row.sym)}" data-live="rsi">${c.rsi??'—'}</span></div>
+    <div>OI 5m：<span data-live-sym="${esc(row.sym)}" data-live="oiChg5m">${signedPct(c.oiChg5m)}</span></div>
+    <div>Funding：<span data-live-sym="${esc(row.sym)}" data-live="funding">${signedPct(c.funding,4)}</span></div>
+    <div>主動買賣比：<span data-live-sym="${esc(row.sym)}" data-live="takerRatio">${c.derivatives?.takerBuySell?.longShortRatio??'—'}</span></div>
+    <div>全帳戶多空：<span data-live-sym="${esc(row.sym)}" data-live="globalLS">${c.derivatives?.globalLongShort?.longShortRatio??'—'}</span></div>
+    <div>頭部持倉：<span data-live-sym="${esc(row.sym)}" data-live="topLS">${c.derivatives?.topTraderPosition?.longShortRatio??'—'}</span></div>
+    <div>OKX價格：<span data-live-sym="${esc(row.sym)}" data-live="okxPrice">${c.okx?.price?'$'+formatPrice(c.okx.price):'—'}</span></div>
+    <div>SMC：${esc(c.smc?.structure??'—')} / ${esc(c.smc?.zone??'—')}</div>
+  </div>
+  <div class="alert-reason">${(row.triggers||[]).map(x=>esc(x.label)).join(' · ')||'—'}</div>
+  <div class="alert-card-actions">
+    <button class="btn ghost alert-track-btn" data-alert-track="${esc(row.alertId)}" ${tracked?'disabled':''} style="padding:7px 10px;font-size:11px">${tracked?'✓ 已追蹤':'＋ 加入異常追蹤'}</button>
+    <button class="btn alert-analyze-btn" data-alert-analyze="${esc(row.sym)}" style="padding:7px 10px;font-size:11px">AI討論 / 準備戰績</button>
+  </div>`;
+}
+
 function alertCardHTML(row){
   const pct=alertPerf(row,row.currentPrice??row.price);
   const isBull=row.dir==='up';
@@ -842,7 +927,8 @@ function alertCardHTML(row){
   const t=row.alertTime?new Date(row.alertTime).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'—';
   const pctText=pct===null?'—':`${pct>0?'+':''}${pct}%`;
   const pctColor=pct===null?'var(--dim)':pct>=0?'var(--green)':'var(--red)';
-  return `<div class="alert-card ${isBull?'bull':'bear'}" data-alert-card-id="${esc(row.alertId)}">
+  const open=ALERT_OPEN_IDS.has(row.alertId);
+  return `<div class="alert-card ${isBull?'bull':'bear'} ${open?'open':''}" data-alert-card-id="${esc(row.alertId)}">
     <div class="alert-card-top">
       <span class="alert-token">⚡</span>
       <span class="alert-sym">${esc(row.sym)}</span>
@@ -858,6 +944,7 @@ function alertCardHTML(row){
       <div><div class="k">觸發時間</div><div class="v">${t}</div></div>
     </div>
     <div class="alert-reason">${(row.triggers||[]).slice(0,4).map(x=>esc(x.label)).join(' · ')}</div>
+    <div class="alert-card-detail">${alertDetailHTML(row)}</div>
   </div>`;
 }
 
@@ -876,6 +963,75 @@ function renderAlertBoard(){
     btn.onclick=(e)=>{
       e.stopPropagation();
       dismissAlert(btn.getAttribute('data-alert-close'));
+    };
+  });
+  document.querySelectorAll('[data-alert-card-id]').forEach(card=>{
+    card.onclick=(e)=>{
+      if(e.target.closest('button')) return;
+      const id=card.getAttribute('data-alert-card-id');
+      if(ALERT_OPEN_IDS.has(id)) ALERT_OPEN_IDS.delete(id); else ALERT_OPEN_IDS.add(id);
+      alertOpenSave();
+      renderAlertBoard();
+    };
+  });
+  document.querySelectorAll('[data-alert-track]').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      addAlertTrack(btn.getAttribute('data-alert-track'));
+    };
+  });
+  document.querySelectorAll('[data-alert-analyze]').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      analyze(btn.getAttribute('data-alert-analyze'));
+    };
+  });
+}
+
+function renderAlertTracks(){
+  const box=$('alertTrackList');
+  if(!box) return;
+  const rows=(ALERT_TRACKS||[]).map(t=>{
+    const alert=ALERT_LOG.find(r=>r.alertId===t.alertId);
+    const live=alert?hydrateAlertRecord(alert):(MKT.find(c=>c.sym===t.sym)||{sym:t.sym,price:lastPrices[t.sym],alertPrice:t.alertPrice,dir:t.dir});
+    return {...live,...t,currentPrice:live.currentPrice??live.price,price:live.price??live.currentPrice};
+  });
+  if($('cntAlertTrack')) $('cntAlertTrack').textContent=rows.length;
+  if(rows.length===0){
+    box.innerHTML=`<div style="padding:16px;color:var(--dimmer);font-size:12px;text-align:center">尚未追蹤異常警報。展開左側警報卡後可加入追蹤。</div>`;
+    return;
+  }
+  box.innerHTML=rows.map(row=>{
+    const pct=alertPerf(row,row.currentPrice??row.price);
+    const color=row.dir==='up'?'var(--green)':'var(--red)';
+    const pctColor=pct===null?'var(--dim)':pct>=0?'var(--green)':'var(--red)';
+    const t=row.addedAt?new Date(row.addedAt).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
+    return `<div class="track-card" data-alert-track-card="${esc(row.trackId)}">
+      <div class="track-head">
+        <span class="track-sym">${esc(row.sym)}</span>
+        <span class="chip" style="color:${color};border-color:${color}">${row.dir==='up'?'看漲':'看跌'}</span>
+        <button class="icon-btn alert-track-remove" data-alert-track-remove="${esc(row.trackId)}" title="移除追蹤" style="margin-left:auto;color:var(--red)">×</button>
+      </div>
+      <div class="track-meta">
+        <div>警報價：$${formatPrice(row.alertPrice)}</div>
+        <div>現價：<span data-price-sym="${esc(row.sym)}">$${formatPrice(row.currentPrice??row.price)}</span></div>
+        <div>警報後：<span data-alert-perf-sym="${esc(row.sym)}" data-alert-perf-id="${esc(row.alertId||'')}" style="color:${pctColor}">${pct===null?'—':(pct>0?'+':'')+pct+'%'}</span></div>
+        <div>加入：${t}</div>
+      </div>
+      <div style="font-size:11px;color:var(--dim);line-height:1.45;margin-bottom:10px">${esc(row.note||row.recommendationReason||'等待 AI 討論確認交易計畫')}</div>
+      <button class="btn alert-track-analyze" data-alert-track-analyze="${esc(row.sym)}" style="width:100%;padding:8px;font-size:11px">AI討論 / 準備加入戰績追蹤</button>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('[data-alert-track-remove]').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      removeAlertTrack(btn.getAttribute('data-alert-track-remove'));
+    };
+  });
+  box.querySelectorAll('[data-alert-track-analyze]').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      analyze(btn.getAttribute('data-alert-track-analyze'));
     };
   });
 }
@@ -984,6 +1140,8 @@ let ACCESS_TOKEN=localStorage.getItem('sessionToken')||'',MODEL='llama-3.1-8b-in
 let MKT=[],SCREENED={},R1={},R2={},curCoin=null, MARKET_CONTEXT=null;
 let ALERT_LOG=alertStorageLoad();
 let ALERT_DISMISSED=alertDismissLoad();
+let ALERT_TRACKS=alertTracksLoad();
+let ALERT_OPEN_IDS=alertOpenLoad();
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function sessionPayload(token){
@@ -1321,7 +1479,6 @@ function pj(t){
 
 // ---------- render scan ----------
 let MARKET_TAB=localStorage.getItem('marketTab')||'all';
-let ALERT_TAB=localStorage.getItem('alertTab')||'long';
 let SIGNAL_TAB=localStorage.getItem('signalTab')||'long';
 
 function coinSearchTerm(){
@@ -1427,17 +1584,15 @@ function coinHTML(c,type){
 function renderScan(){
   const longList=filterCoinList(SCREENED.long||[]);
   const shortList=filterCoinList(SCREENED.short||[]);
-  const alertList=filterCoinList(visibleAlertRecords().filter(c=>ALERT_TAB==='long'?c.dir==='up':c.dir==='dn')).slice(0,24);
   $('listLongSignal').innerHTML=longList.map(c=>coinHTML(c,'long')).join('')||emptyCoinText();
   $('listShortSignal').innerHTML=shortList.map(c=>coinHTML(c,'short')).join('')||emptyCoinText();
   $('listAllCoins').innerHTML=renderAllCoinList();
   renderTopTrackedCoins();
   renderAlertBoard();
-  $('listAlert').innerHTML=alertList.map(c=>coinHTML(c,'alert')).join('')||emptyCoinText('尚無持倉異常警報');
+  renderAlertTracks();
   $('cntLong').textContent=longList.length;
   $('cntShort').textContent=shortList.length;
   $('cntAll').textContent=filterCoinList(popularCoins()).length;
-  $('cntAlert').textContent=alertList.length;
   document.querySelectorAll('[data-market-tab]').forEach(btn=>{
     const tab=btn.getAttribute('data-market-tab')||'all';
     btn.classList.toggle('active',tab===MARKET_TAB);
@@ -1451,14 +1606,6 @@ function renderScan(){
   });
   document.querySelectorAll('.market-panel').forEach(p=>p.classList.remove('active'));
   $('panel'+MARKET_TAB.charAt(0).toUpperCase()+MARKET_TAB.slice(1))?.classList.add('active');
-  document.querySelectorAll('[data-alert-tab]').forEach(btn=>{
-    btn.classList.toggle('active',btn.getAttribute('data-alert-tab')===ALERT_TAB);
-    btn.onclick=()=>{
-      ALERT_TAB=btn.getAttribute('data-alert-tab')||'long';
-      try{localStorage.setItem('alertTab',ALERT_TAB);}catch(e){}
-      renderScan();
-    };
-  });
   const search=$('coinSearch');
   if(search&&!search.dataset.bound){
     search.dataset.bound='1';
