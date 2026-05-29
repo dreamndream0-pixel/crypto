@@ -61,7 +61,7 @@
   .market-panel.active{display:block;}
   .single-panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;}
   .overview-grid{grid-template-columns:minmax(320px,1.35fr) minmax(260px,1fr) minmax(260px,1fr);}
-  .oi-alert-layout{display:grid;grid-template-columns:minmax(420px,1.2fr) minmax(320px,.9fr);gap:13px;align-items:start;}
+  .oi-alert-layout{display:grid;grid-template-columns:minmax(420px,1.2fr) minmax(320px,.9fr);gap:13px;align-items:stretch;}
   @media(max-width:1100px){.overview-grid,.oi-alert-layout{grid-template-columns:1fr;}}
   .scroll-list{max-height:522px;overflow-y:auto;scrollbar-color:var(--line) var(--panel);scrollbar-width:thin;}
   .scroll-list::-webkit-scrollbar{width:7px;}
@@ -87,6 +87,18 @@
   .alert-metrics .k{font-size:9px;color:var(--dimmer);letter-spacing:.5px;}
   .alert-metrics .v{font-size:13px;font-weight:900;color:var(--text);}
   .alert-reason{font-size:10px;color:var(--dim);line-height:1.45;margin-top:8px;}
+  #panelOi .alert-board,#panelOi .single-panel{height:var(--oi-panel-height,560px);min-height:360px;}
+  #panelOi .alert-board{display:flex;flex-direction:column;position:sticky;top:70px;}
+  #panelOi .alert-board-grid{flex:1;min-height:0;}
+  #panelOi .alert-board-grid>div{min-height:0;display:flex;flex-direction:column;}
+  #panelOi .alert-card-list{flex:1;max-height:none;min-height:0;}
+  #panelOi .single-panel{display:flex;flex-direction:column;}
+  #panelOi .col.alert{height:100%;display:flex;flex-direction:column;border:none;}
+  #panelOi #listAlert{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) var(--panel);}
+  .oi-resize-handle{height:18px;margin:8px 0 0;border:1px solid var(--line);border-radius:999px;background:var(--panel);display:flex;align-items:center;justify-content:center;cursor:ns-resize;touch-action:none;}
+  .oi-resize-handle::before{content:"";width:76px;height:4px;border-radius:999px;background:linear-gradient(90deg,var(--cyan),var(--green));opacity:.65;}
+  .oi-resize-handle:hover::before{opacity:1;}
+  body.resizing-oi{cursor:ns-resize;user-select:none;}
 
   .coin{padding:11px 15px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .15s;display:flex;flex-direction:column;gap:5px;}
   .coin:last-child{border-bottom:none;}
@@ -304,6 +316,7 @@
           </div>
         </div>
       </div>
+      <div class="oi-resize-handle" id="oiResizeHandle" title="拖曳調整 OI 儀表板高度"></div>
     </div>
     <div class="hint">💡 篩選引擎用漲跌幅、量能、RSI、OI、資金費率自動排序（不花 AI 額度）。<br>點任一幣 → 展開看詳細數據 → 想分析才按「啟動 9 位 AI 討論」按鈕（才會花 AI 額度）。</div>
 
@@ -3272,12 +3285,24 @@ let PRICE_WS_LIST=[];
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 let lastTradeTicks={}; // 成交流最後更新時間，用來避免 ticker 覆蓋實時成交價
 let lastPriceFallbackAt=0,lastOkxPriceSyncAt=0,lastAlertSaveAt=0;
-let liveTextState='';
+let liveTextState='',liveFeedState='即時更新',liveFeedCount=0;
 
-function setLiveText(text){
+function liveClockText(){
+  return new Date().toLocaleTimeString('zh-TW',{hour12:false});
+}
+
+function renderLiveText(){
+  const countText=liveFeedCount?` · ${liveFeedCount}幣`:'';
+  const text=`${liveFeedState} · ${liveClockText()}${countText}`;
   if(text===liveTextState) return;
   liveTextState=text;
   if($('liveText')) $('liveText').textContent=text;
+}
+
+function setLiveText(text,count=null){
+  liveFeedState=text||'即時更新';
+  if(count!==null) liveFeedCount=Number(count)||0;
+  renderLiveText();
 }
 
 function hasActivePriceWS(){
@@ -3313,7 +3338,7 @@ function connectPriceWS(mode='combined',force=false){
   });
   const pairs=[...new Set([...marketPairs,...watchPairs].filter(p=>/^[a-z0-9]+usdt$/.test(p)))];
   if(pairs.length===0){
-    setLiveText('等待掃描清單');
+    setLiveText('等待掃描清單',0);
     return;
   }
   const streamKey=`combined:${pairs.join(',')}`;
@@ -3329,10 +3354,10 @@ function connectPriceWS(mode='combined',force=false){
     const streams=chunk.flatMap(p=>[`${p}@trade`,`${p}@aggTrade`,`${p}@ticker`]).join('/');
     const ws=new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
     ws.onopen=()=>{
-      if(idx===0) setLiveText(`WS 實時成交推送 · ${pairs.length} 幣`);
+      if(idx===0) setLiveText('WS 實時成交',pairs.length);
       setTimeout(()=>{
         if(liveOn&&Date.now()-lastWsTickAt>4300&&mode==='combined'){
-          setLiveText(`WS 實時成交等待中 · ${pairs.length} 幣`);
+          setLiveText('WS 實時成交等待中',pairs.length);
         }
       },4500);
     };
@@ -3346,13 +3371,13 @@ function connectPriceWS(mode='combined',force=false){
     };
     ws.onclose=()=>{
       if(!PRICE_WS_MANUAL&&liveOn){
-        setLiveText('WS 重連中');
+        setLiveText('WS 重連中',pairs.length);
         clearTimeout(PRICE_WS_TIMER);
         PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2200);
       }
     };
     ws.onerror=()=>{
-      setLiveText('WS 錯誤 · 重連中');
+      setLiveText('WS 錯誤 · 重連中',pairs.length);
       try{ws.close();}catch(e){}
     };
     return ws;
@@ -3509,6 +3534,7 @@ function updateAlertPerformance(sym,price){
 // 輕量：優先監控成交流；若瀏覽器收不到 WS，就用交易所最新價靜默補動。
 async function tickPrices(){
   if(document.hidden) return; // 分頁在背景時跳過，省請求
+  renderLiveText();
   try{
     if(liveOn&&(!hasActivePriceWS()||Date.now()-lastWsTickAt>2800)){
       if(!hasActivePriceWS()||Date.now()-lastWsTickAt>12000){
@@ -3536,6 +3562,40 @@ async function tickRescan(){
   await doScan(true); // true = 靜默模式，不改按鈕文字
 }
 
+function setOiPanelHeight(value,save=false){
+  const h=Math.max(360,Math.min(980,Math.round(Number(value)||560)));
+  document.documentElement.style.setProperty('--oi-panel-height',h+'px');
+  if(save) try{localStorage.setItem('oiPanelHeight',String(h));}catch(e){}
+  return h;
+}
+
+function initOiResize(){
+  setOiPanelHeight(localStorage.getItem('oiPanelHeight')||560,false);
+  const handle=$('oiResizeHandle');
+  if(!handle||handle.dataset.boundResize) return;
+  handle.dataset.boundResize='1';
+  let startY=0,startH=0,dragging=false;
+  const stop=()=>{
+    if(!dragging) return;
+    dragging=false;
+    document.body.classList.remove('resizing-oi');
+  };
+  handle.addEventListener('pointerdown',e=>{
+    dragging=true;
+    startY=e.clientY;
+    startH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--oi-panel-height'))||560;
+    document.body.classList.add('resizing-oi');
+    try{handle.setPointerCapture(e.pointerId);}catch(err){}
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove',e=>{
+    if(!dragging) return;
+    setOiPanelHeight(startH+(e.clientY-startY),true);
+  });
+  window.addEventListener('pointerup',stop);
+  window.addEventListener('pointercancel',stop);
+}
+
 const PRICE_INTERVAL=1000;      // 每秒檢查 WS；價格由成交/ticker 推送更新
 const RESCAN_INTERVAL=60000;    // 完整掃描每 60 秒
 
@@ -3551,6 +3611,7 @@ function startLive(){
   priceTimer=setInterval(tickPrices,PRICE_INTERVAL);
   rescanTimer=setInterval(tickRescan,RESCAN_INTERVAL);
   setLiveText('即時更新啟用');
+  renderLiveText();
   $('scanStatus').textContent='⚡ 自動模式啟用：價格與K線即時更新，背景定期校準與重掃';
 }
 function stopLive(){
@@ -3563,6 +3624,7 @@ function stopLive(){
   $('scanStatus').textContent='';
 }
 $('autoToggle').addEventListener('click',()=>{ liveOn?stopLive():startLive(); });
+initOiResize();
 setTimeout(()=>{
   if(!liveOn) startLive();
 },500);
