@@ -215,7 +215,7 @@
     <div class="market-toolbar">
       <div class="market-search">
         <label for="coinSearch">貨幣搜尋</label>
-        <input class="key-input" id="coinSearch" placeholder="輸入 BTC、ETH、SOL..." style="min-width:180px;max-width:320px;padding:9px 12px">
+        <input class="key-input" id="coinSearch" placeholder="搜尋 Binance / OKX 所有 USDT 合約..." style="min-width:180px;max-width:360px;padding:9px 12px">
       </div>
       <span class="source-pill">資料來源：Binance Futures 實時成交 / OI / Funding</span>
       <span class="source-pill">OKX Swap 價格 / OI / Funding / 多空比</span>
@@ -324,7 +324,7 @@
   </div>
 
   <div class="disclaimer">
-    ⚠️ 市場數據來自幣安合約即時 API（經 Cloudflare Worker 轉發）。RSI、短期變化、OI 5分鐘異動皆由幣安即時計算。<br>
+    ⚠️ 市場數據合併 Binance Futures 與 OKX USDT Swap。Binance 即時成交使用 WebSocket，OKX 價格使用公開行情定期校準；OI / Funding / 多空比依交易所資料更新頻率刷新。<br>
     止盈損點位由 AI 依技術位判斷並確保盈虧比，戰績追蹤以即時價對比進場價計算。AI 分析會出錯，加密貨幣風險極高，僅供研究參考，絕非投資建議或自動交易指令。
   </div>
 </div>
@@ -363,14 +363,95 @@ let PROXY_URL = localStorage.getItem('proxyUrl') || 'https://binance-proxy.dream
 
 const MAJORS=['BTC','ETH','SOL','XRP','BCH','AVAX','LINK','DOGE','APT','SUI','NEAR','BNB','ADA','TRX','TON','DOT','MATIC','LTC'];
 
-// 從 proxy 抓全市場真實數據
-async function fetchMarket(){
+function okxInstId(sym){
+  return `${exchangeSymbol(sym)}-USDT-SWAP`;
+}
+
+function okxBar(interval){
+  if(interval==='1h') return '1H';
+  if(interval==='4h') return '4H';
+  if(interval==='12h') return '12H';
+  if(interval==='1d') return '1D';
+  if(interval==='3d') return '3D';
+  if(interval==='7d') return '1W';
+  if(interval==='1M') return '1M';
+  return interval;
+}
+
+// 從 proxy 抓 Binance 全市場真實數據
+async function fetchBinanceMarket(){
   if(!PROXY_URL) throw new Error('尚未設定 Proxy 網址');
   const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=market');
   if(!res.ok) throw new Error('Proxy 回應錯誤 '+res.status);
   const data=await res.json();
   if(data.error) throw new Error('幣安: '+data.error);
   return data.market; // [{symbol,pair,price,chg24,volUSDT,high24,low24,funding}]
+}
+
+async function fetchOkxSwapMarket(){
+  const res=await fetch('https://www.okx.com/api/v5/market/tickers?instType=SWAP',{cache:'no-store'});
+  if(!res.ok) throw new Error('OKX ticker 回應錯誤 '+res.status);
+  const data=await res.json();
+  const rows=Array.isArray(data?.data)?data.data:[];
+  return rows.filter(r=>String(r.instId||'').endsWith('-USDT-SWAP')).map(r=>{
+    const sym=exchangeSymbol(r.instId);
+    const price=Number(r.last);
+    const open24=Number(r.open24h||r.sodUtc0||0);
+    const volBase=Number(r.volCcy24h||r.vol24h||0);
+    const volQuote=Number(r.volCcyQuote24h||0);
+    const volUSDT=Number.isFinite(volQuote)&&volQuote>0?volQuote:(Number.isFinite(price*volBase)?price*volBase:0);
+    const chg24=open24?((price-open24)/open24*100):0;
+    return {
+      symbol:sym,sym,pair:`${sym}USDT`,price:+price,
+      chg24:+chg24.toFixed(2),volUSDT,high24:Number(r.high24h||0),low24:Number(r.low24h||0),
+      funding:0,hasBinance:false,hasOkx:true,
+      sources:['OKX'],
+      okx:{instId:r.instId,price:+price,chg24:+chg24.toFixed(2),volUSDT,high24:Number(r.high24h||0),low24:Number(r.low24h||0)}
+    };
+  }).filter(c=>c.sym&&Number.isFinite(c.price)&&c.price>0);
+}
+
+function mergeMarketSources(binanceRows=[],okxRows=[]){
+  const map=new Map();
+  (binanceRows||[]).forEach(row=>{
+    const sym=exchangeSymbol(row.symbol||row.sym||row.pair);
+    if(!sym) return;
+    map.set(sym,{
+      ...row,symbol:sym,sym,pair:row.pair||`${sym}USDT`,
+      price:Number(row.price),chg24:Number(row.chg24||0),volUSDT:Number(row.volUSDT||0),
+      funding:Number(row.funding||0),hasBinance:true,hasOkx:false,sources:['Binance']
+    });
+  });
+  (okxRows||[]).forEach(row=>{
+    const sym=exchangeSymbol(row.sym||row.symbol||row.okx?.instId);
+    if(!sym) return;
+    const prev=map.get(sym);
+    if(prev){
+      prev.hasOkx=true;
+      prev.sources=[...new Set([...(prev.sources||['Binance']),'OKX'])];
+      prev.okx=row.okx||{price:row.price,volUSDT:row.volUSDT};
+      if(!Number.isFinite(prev.price)||prev.price<=0) prev.price=row.price;
+      if(!(prev.volUSDT>0)&&row.volUSDT>0) prev.volUSDT=row.volUSDT;
+    }else{
+      map.set(sym,row);
+    }
+  });
+  return [...map.values()]
+    .filter(c=>c.sym&&Number.isFinite(Number(c.price))&&Number(c.price)>0)
+    .sort((a,b)=>(b.volUSDT||0)-(a.volUSDT||0));
+}
+
+// 合併 Binance + OKX 的全市場可交易 USDT 合約清單
+async function fetchMarket(){
+  const [binanceRes,okxRes]=await Promise.allSettled([fetchBinanceMarket(),fetchOkxSwapMarket()]);
+  const binanceRows=binanceRes.status==='fulfilled'?binanceRes.value:[];
+  const okxRows=okxRes.status==='fulfilled'?okxRes.value:[];
+  const merged=mergeMarketSources(binanceRows,okxRows);
+  if(!merged.length){
+    const msg=[binanceRes.reason?.message,okxRes.reason?.message].filter(Boolean).join(' / ');
+    throw new Error(msg||'無法取得 Binance / OKX 市場清單');
+  }
+  return merged;
 }
 
 async function fetchLivePrices(){
@@ -392,6 +473,16 @@ async function fetchLivePrices(){
   }
 }
 
+async function fetchOkxLivePrices(){
+  const rows=await fetchOkxSwapMarket();
+  const prices={},changes={};
+  rows.forEach(c=>{
+    prices[c.sym]=c.price;
+    changes[c.sym]=c.chg24;
+  });
+  return {updated:Date.now(),prices,changes};
+}
+
 async function fetchMarketContext(){
   try{
     const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=context');
@@ -400,38 +491,60 @@ async function fetchMarketContext(){
   }catch(e){ return null; }
 }
 
+async function fetchOkxCandles(sym,interval='5m',limit=80){
+  const instId=okxInstId(sym);
+  const res=await fetch(`https://www.okx.com/api/v5/market/candles?instId=${encodeURIComponent(instId)}&bar=${encodeURIComponent(okxBar(interval))}&limit=${limit}`,{cache:'no-store'});
+  if(!res.ok) throw new Error('OKX K線資料載入失敗');
+  const data=await res.json();
+  const raw=Array.isArray(data?.data)?data.data:[];
+  if(!raw.length) throw new Error('OKX K線資料為空');
+  return raw.map(k=>({
+    time:Number(k[0]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5]||0)
+  })).filter(k=>Number.isFinite(k.close)&&Number.isFinite(k.time)).sort((a,b)=>a.time-b.time);
+}
+
+function calcKlineMetricRows(rows){
+  if(!Array.isArray(rows)||rows.length<20) return null;
+  const closes=rows.map(x=>Number(x.close));
+  const highs=rows.map(x=>Number(x.high));
+  const lows=rows.map(x=>Number(x.low));
+  const vols=rows.map(x=>Number(x.volume||0));
+  const rsi=calcRSI(closes,14);
+  const last=closes[closes.length-1];
+  const p5=closes[closes.length-2];
+  const p15=closes[closes.length-4];
+  const chg5m=p5?((last-p5)/p5*100):0;
+  const chg15m=p15?((last-p15)/p15*100):0;
+  const curVol=vols[vols.length-1];
+  const avgVol=vols.slice(-21,-1).reduce((a,b)=>a+b,0)/20;
+  const volMult=avgVol?curVol/avgVol:1;
+  const ema20=calcEMA(closes,20), ema50=calcEMA(closes,50);
+  const macd=calcMACD(closes);
+  const bb=calcBollinger(closes,20,2);
+  const atr=calcATR(highs,lows,closes,14);
+  const sr=calcSupportResistance(highs,lows,last);
+  const smc=calcSMC(highs,lows,closes);
+  const trend=last>ema20&&ema20>ema50?'多頭排列':last<ema20&&ema20<ema50?'空頭排列':'震盪/轉折';
+  return {
+    rsi,chg5m:+chg5m.toFixed(2),chg15m:+chg15m.toFixed(2),volMult:+volMult.toFixed(1),
+    ref5m:p5,ref15m:p15,
+    ema20:+ema20.toFixed(6),ema50:+ema50.toFixed(6),macd,bb,atr:+atr.toFixed(6),sr,smc,trend
+  };
+}
+
 // 抓單一幣 K線並計算 RSI + 短期變化
 async function fetchKlineMetrics(pair){
   try{
     const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=klines&symbol=${pair}&interval=5m&limit=50`);
     const k=await res.json();
-    if(!Array.isArray(k)||k.length<20) return null;
-    const closes=k.map(x=>parseFloat(x[4]));
-    const highs=k.map(x=>parseFloat(x[2]));
-    const lows=k.map(x=>parseFloat(x[3]));
-    const vols=k.map(x=>parseFloat(x[5]));
-    const rsi=calcRSI(closes,14);
-    const last=closes[closes.length-1];
-    const p5=closes[closes.length-2];      // 上一根 5m
-    const p15=closes[closes.length-4];     // 3根前 ≈ 15m
-    const chg5m=p5?((last-p5)/p5*100):0;
-    const chg15m=p15?((last-p15)/p15*100):0;
-    const curVol=vols[vols.length-1];
-    const avgVol=vols.slice(-21,-1).reduce((a,b)=>a+b,0)/20;
-    const volMult=avgVol?curVol/avgVol:1;
-    const ema20=calcEMA(closes,20), ema50=calcEMA(closes,50);
-    const macd=calcMACD(closes);
-    const bb=calcBollinger(closes,20,2);
-    const atr=calcATR(highs,lows,closes,14);
-    const sr=calcSupportResistance(highs,lows,last);
-    const smc=calcSMC(highs,lows,closes);
-    const trend=last>ema20&&ema20>ema50?'多頭排列':last<ema20&&ema20<ema50?'空頭排列':'震盪/轉折';
-    return {
-      rsi,chg5m:+chg5m.toFixed(2),chg15m:+chg15m.toFixed(2),volMult:+volMult.toFixed(1),
-      ref5m:p5,ref15m:p15,
-      ema20:+ema20.toFixed(6),ema50:+ema50.toFixed(6),macd,bb,atr:+atr.toFixed(6),sr,smc,trend
-    };
-  }catch(e){ return null; }
+    if(Array.isArray(k)&&k.length>=20){
+      return calcKlineMetricRows(k.map(x=>({time:Number(x[0]),open:Number(x[1]),high:Number(x[2]),low:Number(x[3]),close:Number(x[4]),volume:Number(x[5])})));
+    }
+    throw new Error('Binance K線資料不足');
+  }catch(e){
+    try{ return calcKlineMetricRows(await fetchOkxCandles(exchangeSymbol(pair),'5m',50)); }
+    catch(err){ return null; }
+  }
 }
 
 function calcRSI(closes,period=14){
@@ -587,8 +700,95 @@ function detectAlert(c){
   else if(hasFund){type='槓桿過熱·留意反轉';typeColor='var(--amber)';}
   else {type=priceUp?'放量急拉':'放量急殺';typeColor=priceUp?'var(--green)':'var(--red)';}
 
-  return {triggers,type,typeColor,dir:priceUp?'up':'dn',
-    score:+(triggers.length*10+Math.abs(c.chg5m)).toFixed(1)};
+  const rec=alertRecommendation(c,triggers,type);
+  return {triggers,type:`${rec.label} · ${type}`,baseType:type,typeColor:rec.color,dir:rec.dir,
+    recommendation:rec.label,recommendationReason:rec.reason,biasScore:rec.score,
+    score:+(triggers.length*10+Math.abs(c.chg5m)+(rec.score||0)*0.15).toFixed(1)};
+}
+
+function alertRecommendation(c,triggers=[],baseType=''){
+  const chg5=Number(c.chg5m||0), chg15=Number(c.chg15m||0), oi=Number(c.oiChg5m||0);
+  const funding=Number(c.funding||0), vol=Number(c.volMult||1);
+  const taker=Number(c.derivatives?.takerBuySell?.longShortRatio??1);
+  const top=Number(c.derivatives?.topTraderPosition?.longShortRatio??1);
+  const smc=c.smc||{};
+  let bull=0,bear=0;
+  const reasons=[];
+  if(oi>0&&chg5>0){bull+=28;reasons.push('OI增+價格上升=新多進場');}
+  if(oi>0&&chg5<0){bear+=28;reasons.push('OI增+價格下跌=新空進場');}
+  if(oi<0&&chg5>0){bull+=8;bear+=8;reasons.push('OI降+價格上升=空頭回補，追多需看量');}
+  if(oi<0&&chg5<0){bear+=14;reasons.push('OI降+價格下跌=多頭退場');}
+  if(chg15>0) bull+=Math.min(16,chg15*2.2); else bear+=Math.min(16,Math.abs(chg15)*2.2);
+  if(taker>1.12){bull+=15;reasons.push('主動買盤偏強');}
+  if(taker<0.9){bear+=15;reasons.push('主動賣盤偏強');}
+  if(top>1.15){bull+=8;reasons.push('頭部持倉偏多');}
+  if(top<0.88){bear+=8;reasons.push('頭部持倉偏空');}
+  if(funding>0.06){bear+=12;reasons.push('資金費率過熱，偏反向風險');}
+  if(funding<-0.03){bull+=10;reasons.push('資金費率偏負，空方擁擠');}
+  if(vol>2&&chg5>0) bull+=7;
+  if(vol>2&&chg5<0) bear+=7;
+  if(String(smc.bos||'').includes('bullish')||String(smc.choch||'').includes('bullish')) bull+=8;
+  if(String(smc.bos||'').includes('bearish')||String(smc.choch||'').includes('bearish')) bear+=8;
+  const dir=bull>=bear?'up':'dn';
+  const edge=Math.abs(bull-bear);
+  const label=dir==='up'?'看漲推薦':'看跌推薦';
+  const color=dir==='up'?'var(--green)':'var(--red)';
+  return {dir,label,color,score:+edge.toFixed(1),reason:reasons.slice(0,4).join('；')||baseType||label,bull:+bull.toFixed(1),bear:+bear.toFixed(1)};
+}
+
+function alertStorageLoad(){
+  try{
+    const rows=JSON.parse(localStorage.getItem('alertSnapshots')||'[]');
+    return Array.isArray(rows)?rows:[];
+  }catch(e){ return []; }
+}
+
+function alertStorageSave(){
+  try{ localStorage.setItem('alertSnapshots',JSON.stringify((ALERT_LOG||[]).slice(0,160))); }catch(e){}
+}
+
+function alertPerf(row,price=null){
+  const p=Number(price??row.currentPrice??row.price);
+  const base=Number(row.alertPrice);
+  if(!Number.isFinite(p)||!Number.isFinite(base)||base<=0) return null;
+  return +(((p-base)/base)*100).toFixed(2);
+}
+
+function hydrateAlertRecord(row){
+  const live=MKT.find(c=>c.sym===row.sym)||{};
+  const price=Number(live.price??lastPrices[row.sym]??row.currentPrice??row.price);
+  const pct=alertPerf(row,price);
+  return {...live,...row,price:Number.isFinite(price)?price:row.price,currentPrice:Number.isFinite(price)?price:row.currentPrice,sinceAlertPct:pct};
+}
+
+function recordAlertSnapshots(alerts=[]){
+  const now=Date.now();
+  const fresh=[];
+  alerts.forEach(a=>{
+    const sig=(a.triggers||[]).map(t=>t.t).sort().join(',');
+    const key=`${a.sym}:${a.dir}:${sig}`;
+    let rec=ALERT_LOG.find(x=>x.key===key&&now-Number(x.alertTime||0)<45*60*1000);
+    if(!rec){
+      rec={
+        alertId:'al_'+a.sym+'_'+now+'_'+Math.random().toString(36).slice(2,5),
+        key,sym:a.sym,dir:a.dir,alertTime:now,alertPrice:Number(a.price),
+        currentPrice:Number(a.price),sinceAlertPct:0
+      };
+      ALERT_LOG.unshift(rec);
+    }
+    Object.assign(rec,{
+      ...a,key,alertId:rec.alertId,alertTime:rec.alertTime,alertPrice:rec.alertPrice,
+      currentPrice:Number(a.price),sinceAlertPct:alertPerf(rec,a.price),
+      lastSeenAt:now
+    });
+    fresh.push(rec);
+  });
+  ALERT_LOG=ALERT_LOG
+    .filter(r=>now-Number(r.alertTime||0)<48*60*60*1000)
+    .sort((a,b)=>Number(b.lastSeenAt||b.alertTime||0)-Number(a.lastSeenAt||a.alertTime||0))
+    .slice(0,160);
+  alertStorageSave();
+  return ALERT_LOG.map(hydrateAlertRecord);
 }
 
 function screen(mkt){
@@ -609,7 +809,7 @@ function screen(mkt){
   long.sort((a,b)=>b.score-a.score);
   short.sort((a,b)=>b.score-a.score);
   alert.sort((a,b)=>b.score-a.score);
-  return {long:long.slice(0,5),short:short.slice(0,4),alert:alert.slice(0,6)};
+  return {long:long.slice(0,8),short:short.slice(0,8),alert:recordAlertSnapshots(alert)};
 }
 
 // ---------- 9 位分析師 ----------
@@ -663,6 +863,7 @@ function agentRolePrompt(a){
 const labelMap={buy:'買入',sell:'賣出',hold:'觀望'};
 let ACCESS_TOKEN=localStorage.getItem('sessionToken')||'',MODEL='llama-3.1-8b-instant';
 let MKT=[],SCREENED={},R1={},R2={},curCoin=null, MARKET_CONTEXT=null;
+let ALERT_LOG=alertStorageLoad();
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function sessionPayload(token){
@@ -1011,7 +1212,9 @@ function coinPassSearch(c){
   const q=coinSearchTerm();
   if(!q) return true;
   return String(c?.sym||c?.symbol||'').toUpperCase().includes(q) ||
-    String(c?.pair||'').toUpperCase().includes(q);
+    String(c?.pair||'').toUpperCase().includes(q) ||
+    String(c?.okx?.instId||'').toUpperCase().includes(q) ||
+    String(c?.sources||'').toUpperCase().includes(q);
 }
 
 function filterCoinList(list){
@@ -1058,7 +1261,11 @@ function coinHTML(c,type){
 
   if(type==='alert'){
     const dirIcon=c.dir==='up'?'▲':'▼';
-    const trigChips=c.triggers.map(t=>`<span class="chip">${t.label}</span>`).join('');
+    const trigChips=(c.triggers||[]).map(t=>`<span class="chip">${t.label}</span>`).join('');
+    const perf=alertPerf(c,c.currentPrice??c.price);
+    const alertColor=c.typeColor||(c.dir==='up'?'var(--green)':'var(--red)');
+    const perfColor=perf===null?'var(--dim)':perf>=0?'var(--green)':'var(--red)';
+    const alertTime=c.alertTime?new Date(c.alertTime).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'—';
     return `<div class="coin" data-sym="${c.sym}" data-type="alert">
       <div class="coin-header" style="cursor:pointer;user-select:none">
         <div class="coin-top">
@@ -1068,9 +1275,12 @@ function coinHTML(c,type){
           <button class="icon-btn chart-icon" data-chart-sym="${c.sym}" data-chart-pair="${c.pair}" title="查看K線">▥</button>
           <span class="coin-toggle" style="margin-left:auto;color:var(--dimmer);font-family:'Chakra Petch',monospace;font-size:11px">▼</span>
         </div>
-        <div style="font-size:11px;font-weight:700;color:${c.typeColor};margin:1px 0">${dirIcon} ${c.type}</div>
+        <div style="font-size:11px;font-weight:700;color:${alertColor};margin:1px 0">${dirIcon} ${c.type||c.recommendation||'持倉異常'}</div>
         <div class="coin-meta">${trigChips}
-          <span class="chip" style="border-color:${c.typeColor};color:${c.typeColor}">${c.triggers.length}項觸發</span>
+          <span class="chip" style="border-color:${alertColor};color:${alertColor}">${(c.triggers||[]).length}項觸發</span>
+          <span class="chip" style="border-color:${alertColor};color:${alertColor}">${c.recommendation||'方向判讀'}</span>
+          <span class="chip">觸發 $${formatPrice(c.alertPrice??c.price)} · ${alertTime}</span>
+          <span class="chip" data-alert-perf-sym="${c.sym}" data-alert-perf-id="${c.alertId||''}" style="color:${perfColor}">警報後 ${perf===null?'—':(perf>0?'+':'')+perf+'%'}</span>
         </div>
       </div>
       ${detailHTML}
@@ -1097,12 +1307,12 @@ function coinHTML(c,type){
 function renderScan(){
   const longList=filterCoinList(SCREENED.long||[]);
   const shortList=filterCoinList(SCREENED.short||[]);
-  const alertList=filterCoinList((SCREENED.alert||[]).filter(c=>ALERT_TAB==='long'?c.dir==='up':c.dir==='dn'));
+  const alertList=filterCoinList((SCREENED.alert||[]).map(hydrateAlertRecord).filter(c=>ALERT_TAB==='long'?c.dir==='up':c.dir==='dn')).slice(0,24);
   $('listLongSignal').innerHTML=longList.map(c=>coinHTML(c,'long')).join('')||emptyCoinText();
   $('listShortSignal').innerHTML=shortList.map(c=>coinHTML(c,'short')).join('')||emptyCoinText();
   $('listAllCoins').innerHTML=renderAllCoinList();
   renderTopTrackedCoins();
-  $('listAlert').innerHTML=alertList.map(c=>coinHTML(c,'alert')).join('')||emptyCoinText();
+  $('listAlert').innerHTML=alertList.map(c=>coinHTML(c,'alert')).join('')||emptyCoinText('尚無持倉異常警報');
   $('cntLong').textContent=longList.length;
   $('cntShort').textContent=shortList.length;
   $('cntAll').textContent=filterCoinList(popularCoins()).length;
@@ -1174,7 +1384,7 @@ function renderScan(){
 }
 
 function popularCoins(){
-  return [...(MKT||[])].sort((a,b)=>(b.volUSDT||0)-(a.volUSDT||0)).slice(0,80);
+  return [...(MKT||[])].sort((a,b)=>(b.volUSDT||0)-(a.volUSDT||0));
 }
 
 function renderAllCoinList(){
@@ -1182,11 +1392,13 @@ function renderAllCoinList(){
   const rows=filterCoinList(popularCoins());
   return rows.map(c=>{
     const tag=promoted.has(c.sym)?'<span class="chip" style="color:var(--cyan);border-color:var(--cyan)">候選</span>':'';
+    const src=(c.sources||[c.hasBinance?'Binance':'',c.hasOkx?'OKX':''].filter(Boolean)).join('+')||'—';
     return `<div class="coin" data-sym="${esc(c.sym)}" data-type="all">
       <div class="coin-header" style="cursor:pointer;user-select:none">
         <div class="coin-top">
           <span class="coin-sym">${esc(c.sym)}</span>
           ${tag}
+          <span class="chip">${esc(src)}</span>
           <span class="coin-price" data-price-sym="${esc(c.sym)}">$${c.price}</span>
           <button class="icon-btn chart-icon" data-chart-sym="${esc(c.sym)}" data-chart-pair="${esc(c.pair)}" title="查看K線">▥</button>
           <span class="coin-toggle" style="margin-left:auto;color:var(--dimmer);font-family:'Chakra Petch',monospace;font-size:11px">▼</span>
@@ -1342,18 +1554,24 @@ async function fetchKlines(pair,interval='5m',limit=80){
   const cached=KLINE_CACHE.get(key);
   if(cached&&Date.now()-cached.time<20*1000) return cached.rows;
   const apiInterval=binanceInterval(interval);
-  const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=klines&symbol=${pair}&interval=${apiInterval}&limit=${limit}`);
-  if(!res.ok) throw new Error('K線資料載入失敗');
-  const raw=await res.json();
-  if(!Array.isArray(raw)) throw new Error(raw?.error||'K線資料格式錯誤');
-  const rows=raw.map(k=>({
-    time:Number(k[0]),
-    open:Number(k[1]),
-    high:Number(k[2]),
-    low:Number(k[3]),
-    close:Number(k[4]),
-    volume:Number(k[5]),
-  })).filter(k=>Number.isFinite(k.close)&&Number.isFinite(k.high)&&Number.isFinite(k.low));
+  let rows=[];
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+`/?type=klines&symbol=${pair}&interval=${apiInterval}&limit=${limit}`);
+    if(!res.ok) throw new Error('Binance K線資料載入失敗');
+    const raw=await res.json();
+    if(!Array.isArray(raw)) throw new Error(raw?.error||'Binance K線資料格式錯誤');
+    rows=raw.map(k=>({
+      time:Number(k[0]),
+      open:Number(k[1]),
+      high:Number(k[2]),
+      low:Number(k[3]),
+      close:Number(k[4]),
+      volume:Number(k[5]),
+    })).filter(k=>Number.isFinite(k.close)&&Number.isFinite(k.high)&&Number.isFinite(k.low));
+    if(rows.length<5) throw new Error('Binance K線資料不足');
+  }catch(e){
+    rows=await fetchOkxCandles(exchangeSymbol(pair),interval,limit);
+  }
   KLINE_CACHE.set(key,{time:Date.now(),rows});
   return rows;
 }
@@ -1403,6 +1621,11 @@ function connectChartWS(){
   closeChartWS();
   const {sym,pair,interval}=CURRENT_CHART;
   if(!sym||!pair) return;
+  const row=MKT.find(c=>c.sym===sym);
+  if(row&&row.hasBinance===false){
+    if($('modalChartMeta')) $('modalChartMeta').textContent=`${interval} · OKX 公開行情定期校準中`;
+    return;
+  }
   CHART_WS_MANUAL=false;
   const stream=isSyntheticInterval(interval)
     ? `${pair.toLowerCase()}@trade/${pair.toLowerCase()}@aggTrade/${pair.toLowerCase()}@ticker`
@@ -1746,6 +1969,27 @@ function formatPrice(n){
   return n.toFixed(6);
 }
 
+async function enrichCoin(c){
+  const [m,oiChg,deriv]=await Promise.all([fetchKlineMetrics(c.pair),fetchOIChange(c.pair),fetchDerivativeMetrics(c.pair)]);
+  return {
+    ...c,
+    rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1,
+    ref5m:m?m.ref5m:null, ref15m:m?m.ref15m:null,
+    ema20:m?m.ema20:null, ema50:m?m.ema50:null, macd:m?m.macd:null, bb:m?m.bb:null,
+    atr:m?m.atr:null, sr:m?m.sr:null, smc:m?m.smc:null, trend:m?m.trend:'未知',
+    oiChg5m:oiChg, derivatives:deriv, liqSpike:0, enriched:true
+  };
+}
+
+function mergeEnrichedIntoMarket(market,enriched){
+  const bySym=new Map((enriched||[]).map(c=>[c.sym,c]));
+  return (market||[]).map(c=>bySym.get(c.sym)||{
+    ...c,rsi:c.rsi??50,chg5m:c.chg5m??0,chg15m:c.chg15m??0,volMult:c.volMult??1,
+    oiChg5m:c.oiChg5m??0,derivatives:c.derivatives??null,smc:c.smc??null,trend:c.trend??'待計算',
+    enriched:false
+  });
+}
+
 async function doScan(silent=false){
   if(!silent) $('errBox').style.display='none';
   if(!PROXY_URL){
@@ -1763,36 +2007,26 @@ async function doScan(silent=false){
     let market=rawMarket;
     market=market.map(c=>({...c,isMajor:MAJORS.includes(c.symbol),sym:c.symbol}));
 
-    // 階段2：用 24h/量/資金費率先粗篩出最值得細看的前 60 支
+    // 階段2：保留全市場清單給搜尋；另粗篩出最值得細看的前 100 支做重指標
     const prelim=market.map(c=>{
       const volScore=Math.min(1,c.volUSDT/1e9);
       const s=Math.abs(c.chg24)*1.0 + volScore*25 + Math.abs(c.funding)*40;
       return {c,s};
-    }).sort((a,b)=>b.s-a.s).slice(0,60).map(x=>x.c);
+    }).sort((a,b)=>b.s-a.s).slice(0,100).map(x=>x.c);
 
-    // 階段3：對 60 支並行抓 K線 + OI + 真實合約訂單流
+    // 階段3：對候選幣並行抓 K線 + OI + 真實合約訂單流
     showStatus('⚡ 計算技術指標 + OI + 多空比...');
     const enriched=[];
     const batchSize=8;
     for(let i=0;i<prelim.length;i+=batchSize){
       const batch=prelim.slice(i,i+batchSize);
-      const results=await Promise.all(batch.map(async c=>{
-        const [m,oiChg,deriv]=await Promise.all([fetchKlineMetrics(c.pair),fetchOIChange(c.pair),fetchDerivativeMetrics(c.pair)]);
-        return {
-          ...c,
-          rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1,
-          ref5m:m?m.ref5m:null, ref15m:m?m.ref15m:null,
-          ema20:m?m.ema20:null, ema50:m?m.ema50:null, macd:m?m.macd:null, bb:m?m.bb:null,
-          atr:m?m.atr:null, sr:m?m.sr:null, smc:m?m.smc:null, trend:m?m.trend:'未知',
-          oiChg5m:oiChg, derivatives:deriv, liqSpike:0
-        };
-      }));
+      const results=await Promise.all(batch.map(enrichCoin));
       enriched.push(...results);
       showStatus(`⚡ 計算指標+OI+多空比 ${Math.min(i+batchSize,prelim.length)}/${prelim.length}...`);
     }
 
-    MKT=enriched;
-    SCREENED=screen(MKT);
+    MKT=mergeEnrichedIntoMarket(market,enriched);
+    SCREENED=screen(enriched);
     renderScan();
     if(liveOn) connectPriceWS();
     showStatus('⚡ 自動模式啟用：價格即時推送，背景定期重掃');
@@ -1829,7 +2063,17 @@ function paint(id,v,conf,reason,changed,evidence){
 }
 async function analyze(sym){
   if(!sessionValid()){goLogin();return;}
-  const c=MKT.find(x=>x.sym===sym);curCoin=c;
+  let c=MKT.find(x=>x.sym===sym);
+  if(c&&!c.enriched){
+    $('scanStatus').textContent=`⚡ ${sym} 補抓 K線 / OI / 多空比...`;
+    c=await enrichCoin(c);
+    const idx=MKT.findIndex(x=>x.sym===sym);
+    if(idx>=0) MKT[idx]=c; else MKT.unshift(c);
+    SCREENED=screen(MKT.filter(x=>x.enriched));
+    renderScan();
+  }
+  if(!c){ flash(`${sym} 不在 Binance / OKX USDT 合約清單內`,'err'); return; }
+  curCoin=c;
   const mode=getMode(), agents=activeAgents();
   document.querySelectorAll('.coin').forEach(e=>e.classList.toggle('selected',e.dataset.sym===sym));
   R1={};R2={};
@@ -2851,7 +3095,7 @@ let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0, lastWsT
 let PRICE_WS_LIST=[];
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 let lastTradeTicks={}; // 成交流最後更新時間，用來避免 ticker 覆蓋實時成交價
-let lastPriceFallbackAt=0;
+let lastPriceFallbackAt=0,lastOkxPriceSyncAt=0,lastAlertSaveAt=0;
 let liveTextState='';
 
 function setLiveText(text){
@@ -2885,8 +3129,12 @@ function handlePriceWsPayload(d){
 }
 
 function connectPriceWS(mode='combined',force=false){
-  const marketPairs=MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase());
-  const watchPairs=(WATCHLIST||[]).map(w=>`${normalizeWatchSymbol(typeof w==='string'?w:w.sym||w.id)}USDT`.toLowerCase());
+  const marketPairs=MKT.filter(c=>c.hasBinance!==false).slice(0,90).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase());
+  const watchPairs=(WATCHLIST||[]).map(w=>{
+    const sym=normalizeWatchSymbol(typeof w==='string'?w:w.sym||w.id);
+    const row=MKT.find(c=>c.sym===sym);
+    return row&&row.hasBinance===false?'':`${sym}USDT`.toLowerCase();
+  });
   const pairs=[...new Set([...marketPairs,...watchPairs].filter(p=>/^[a-z0-9]+usdt$/.test(p)))];
   if(pairs.length===0){
     setLiveText('等待掃描清單');
@@ -2968,6 +3216,7 @@ function updateLivePrice(sym,price,source='WS'){
     if(MKT[idx].ref15m) MKT[idx].chg15m=+(((price-MKT[idx].ref15m)/MKT[idx].ref15m)*100).toFixed(2);
   }
   updateLiveDetails(sym);
+  updateAlertPerformance(sym,price);
   if(source!=='chart') updateOpenChartFromPrice(sym,Number(price));
   if(RECS.length>0&&Date.now()-lastRecRenderAt>1600){
     const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c.price);
@@ -3040,6 +3289,47 @@ async function syncLatestExchangePrices(){
   });
 }
 
+async function syncOkxLatestPrices(){
+  const d=await fetchOkxLivePrices();
+  Object.entries(d.prices||{}).forEach(([sym,price])=>{
+    const s=exchangeSymbol(sym);
+    const p=Number(price);
+    if(!s||!Number.isFinite(p)) return;
+    const idx=MKT.findIndex(x=>x.sym===s);
+    if(idx>=0){
+      MKT[idx].okx={...(MKT[idx].okx||{}),price:p,chg24:d.changes?.[s]??MKT[idx].okx?.chg24};
+      if(MKT[idx].hasBinance===false) {
+        MKT[idx].price=p;
+        if(Number.isFinite(d.changes?.[s])) MKT[idx].chg24=+Number(d.changes[s]).toFixed(2);
+      }
+    }
+    if(idx>=0&&MKT[idx].hasBinance===false) updateLivePrice(s,p,'OKX最新成交價');
+    else updateLiveDetails(s);
+  });
+}
+
+function updateAlertPerformance(sym,price){
+  let changed=false;
+  ALERT_LOG.forEach(row=>{
+    if(row.sym!==sym) return;
+    row.currentPrice=Number(price);
+    row.sinceAlertPct=alertPerf(row,price);
+    changed=true;
+  });
+  if(!changed) return;
+  document.querySelectorAll(`[data-alert-perf-sym="${sym}"]`).forEach(el=>{
+    const id=el.getAttribute('data-alert-perf-id');
+    const row=ALERT_LOG.find(r=>r.alertId===id)||ALERT_LOG.find(r=>r.sym===sym);
+    const pct=row?alertPerf(row,price):null;
+    el.textContent=`警報後 ${pct===null?'—':(pct>0?'+':'')+pct+'%'}`;
+    el.style.color=pct===null?'var(--dim)':pct>=0?'var(--green)':'var(--red)';
+  });
+  if(Date.now()-lastAlertSaveAt>5000){
+    lastAlertSaveAt=Date.now();
+    alertStorageSave();
+  }
+}
+
 // 輕量：優先監控成交流；若瀏覽器收不到 WS，就用交易所最新價靜默補動。
 async function tickPrices(){
   if(document.hidden) return; // 分頁在背景時跳過，省請求
@@ -3053,6 +3343,10 @@ async function tickPrices(){
         lastPriceFallbackAt=Date.now();
         await syncLatestExchangePrices();
       }
+    }
+    if(liveOn&&Date.now()-lastOkxPriceSyncAt>3500){
+      lastOkxPriceSyncAt=Date.now();
+      await syncOkxLatestPrices();
     }
   }catch(e){
     if(liveOn) setLiveText('WS 等待重連');
