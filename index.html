@@ -428,6 +428,7 @@ async function fetchKlineMetrics(pair){
     const trend=last>ema20&&ema20>ema50?'多頭排列':last<ema20&&ema20<ema50?'空頭排列':'震盪/轉折';
     return {
       rsi,chg5m:+chg5m.toFixed(2),chg15m:+chg15m.toFixed(2),volMult:+volMult.toFixed(1),
+      ref5m:p5,ref15m:p15,
       ema20:+ema20.toFixed(6),ema50:+ema50.toFixed(6),macd,bb,atr:+atr.toFixed(6),sr,smc,trend
     };
   }catch(e){ return null; }
@@ -694,7 +695,7 @@ function activeAgents(){
 function updateModeUI(){
   const mode=getMode();
   const provider='gemini';
-  let tip=`${mode.hint} · 分析師:Groq · 總整理:${provider}`;
+  let tip=`${mode.hint} · 分析師:Groq優先/自動備援 · 總整理:${provider}優先/自動備援`;
   if($('modeHint')) $('modeHint').textContent=tip;
   if($('rankLabel')) $('rankLabel').textContent=`Top 3 評選 · ${mode.label}模式 · ${activeAgents().length} 位分析師打分`;
 }
@@ -706,6 +707,129 @@ function setProgress(elId,done,total,label){
 }
 function esc(v){
   return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function fmtPct(v,digits=2){
+  v=Number(v);
+  if(!Number.isFinite(v)) return '—';
+  return `${v>0?'+':''}${v.toFixed(digits)}%`;
+}
+
+function localDirectionScores(c){
+  const rsi=Number(c.rsi??50);
+  const chg5=Number(c.chg5m??0), chg15=Number(c.chg15m??0), chg24=Number(c.chg24??0);
+  const oi=Number(c.oiChg5m??0), funding=Number(c.funding??0), vol=Number(c.volMult??1);
+  const taker=Number(c.derivatives?.takerBuySell?.longShortRatio??1);
+  const top=Number(c.derivatives?.topTraderPosition?.longShortRatio??1);
+  const smc=c.smc||{};
+  let buy=0,sell=0;
+  if(chg5>0) buy+=Math.min(18,chg5*5); else sell+=Math.min(18,Math.abs(chg5)*5);
+  if(chg15>0) buy+=Math.min(18,chg15*3); else sell+=Math.min(18,Math.abs(chg15)*3);
+  if(chg24>0) buy+=Math.min(12,chg24*.7); else sell+=Math.min(12,Math.abs(chg24)*.7);
+  if(rsi<32) buy+=14; else if(rsi>70) sell+=14; else if(rsi>56) buy+=5; else if(rsi<44) sell+=5;
+  if(oi>0&&chg5>0) buy+=12; else if(oi>0&&chg5<0) sell+=12;
+  if(funding<0) buy+=6; else if(funding>0.04) sell+=8;
+  if(vol>1.8&&chg5>0) buy+=7; else if(vol>1.8&&chg5<0) sell+=7;
+  if(taker>1.15) buy+=8; else if(taker<.85) sell+=8;
+  if(top>1.12) buy+=5; else if(top<.9) sell+=5;
+  if(smc.bos==='bullish'||smc.choch==='bullish') buy+=8;
+  if(smc.bos==='bearish'||smc.choch==='bearish') sell+=8;
+  return {buy:+buy.toFixed(1),sell:+sell.toFixed(1),edge:+(buy-sell).toFixed(1)};
+}
+
+function fallbackAgentVote(a,c,err=null,prior=null){
+  const s=localDirectionScores(c);
+  const abs=Math.abs(s.edge);
+  let verdict=abs<9?'hold':(s.edge>0?'buy':'sell');
+  let confidence=clamp(48+abs*.9,48,78);
+  const rsi=Number(c.rsi??50), funding=Number(c.funding??0), oi=Number(c.oiChg5m??0);
+  const chg5=Number(c.chg5m??0), chg15=Number(c.chg15m??0), vol=Number(c.volMult??1);
+  const taker=Number(c.derivatives?.takerBuySell?.longShortRatio??1);
+  const smc=c.smc||{};
+  let reason='';
+  let triggers=[];
+  if(a.id==='chain'){
+    verdict='hold'; confidence=52;
+    reason='本地規則備援：目前未接 Glassnode/CryptoQuant/Santiment 等真鏈上資料，鏈上派不提高方向性判斷。';
+    triggers=['鏈上資料未接入'];
+  }else if(a.id==='tech'){
+    triggers=[`RSI ${rsi}`,`5m ${fmtPct(chg5)}`,`15m ${fmtPct(chg15)}`,`趨勢 ${c.trend||'—'}`];
+    reason=`本地規則備援：技術面以 RSI、短線漲跌與趨勢判斷，買分 ${s.buy}、賣分 ${s.sell}。`;
+  }else if(a.id==='smc'){
+    if(!(smc.bos==='bullish'||smc.choch==='bullish'||smc.bos==='bearish'||smc.choch==='bearish')){
+      verdict='hold'; confidence=Math.min(confidence,55);
+    }
+    triggers=[`structure ${smc.structure||'—'}`,`BOS ${smc.bos||'—'}`,`CHoCH ${smc.choch||'—'}`,`zone ${smc.zone||'—'}`];
+    reason='本地規則備援：SMC 只採用系統演算法算出的 BOS/CHoCH/區域，訊號不明時維持觀望。';
+  }else if(a.id==='flow'||a.id==='chips'){
+    triggers=[`OI ${fmtPct(oi)}`,`Funding ${fmtPct(funding,4)}`,`主動買賣比 ${Number.isFinite(taker)?taker:'—'}`,`OKX資金 ${c.derivatives?.okx?.fundingRatePct??'—'}%`];
+    reason=`本地規則備援：合約資料以 OI、資金費率、主動買賣比與 OKX/Binance 交叉檢查，買分 ${s.buy}、賣分 ${s.sell}。`;
+  }else if(a.id==='senti'){
+    const fg=MARKET_CONTEXT?.sentiment?.fearGreedValue??'—';
+    triggers=[`恐懼貪婪 ${fg}`,`Funding ${fmtPct(funding,4)}`,`全帳戶多空 ${c.derivatives?.globalLongShort?.longShortRatio??'—'}`];
+    reason='本地規則備援：情緒派以恐懼貪婪、資金費率與多空比檢查擁擠程度。';
+  }else if(a.id==='momo'){
+    triggers=[`5m ${fmtPct(chg5)}`,`15m ${fmtPct(chg15)}`,`量倍 ${vol.toFixed(1)}x`];
+    reason='本地規則備援：動能派以 5m/15m 爆發與成交量倍數判斷短線延續性。';
+  }else if(a.id==='news'){
+    const news=relatedNews(c.sym).length+relatedAnnouncements(c.sym).length;
+    if(news===0) confidence=Math.min(confidence,55);
+    triggers=[`相關新聞/公告 ${news} 筆`,`熱門幣資料 ${MARKET_CONTEXT?.trendingCoins?.length??0} 筆`];
+    reason='本地規則備援：新聞派只採用已抓到的公告/新聞/熱門幣資料，沒有直接題材就降低信心。';
+  }else if(a.id==='macro'){
+    const fg=MARKET_CONTEXT?.sentiment?.fearGreedValue??'—';
+    triggers=[`恐懼貪婪 ${fg}`,`24h ${fmtPct(c.chg24)}`,`BTC dominance ${MARKET_CONTEXT?.macroProxy?.btcDominance??'—'}`];
+    reason='本地規則備援：總經派以全市場風險偏好代理資料輔助，不使用未接入的利率或美元資料。';
+  }
+  if(prior&&prior.verdict&&prior.verdict!=='hold'&&verdict==='hold'){
+    confidence=Math.max(50,confidence-4);
+  }
+  const apiNote=err?` API暫不可用：${String(err.message||err).slice(0,56)}`:'';
+  return {
+    verdict,confidence:Math.round(confidence),
+    reason:reason+apiNote,
+    dataUsed:`價格 $${formatPrice(c.price)}；24h ${fmtPct(c.chg24)}；5m ${fmtPct(chg5)}；15m ${fmtPct(chg15)}；RSI ${rsi}；OI ${fmtPct(oi)}；Funding ${fmtPct(funding,4)}`,
+    triggers:triggers.join('；')||`本地分數 買${s.buy}/賣${s.sell}`
+  };
+}
+
+function priceDigits(price){
+  price=Number(price);
+  if(price>=1000) return 1;
+  if(price>=100) return 2;
+  if(price>=1) return 4;
+  return 6;
+}
+
+function roundTradePrice(v,ref){
+  const d=priceDigits(ref);
+  return Number(Number(v).toFixed(d));
+}
+
+function fallbackFinalVerdict(sym,c,agents,roundResults,cnt,mode,err=null){
+  const price=Number(c.price);
+  const voteScore=agents.reduce((sum,a)=>{
+    const r=roundResults[a.id]||{};
+    const w=Number(r.confidence||50)/100;
+    return sum+(r.verdict==='buy'?w:r.verdict==='sell'?-w:0);
+  },0);
+  const data=localDirectionScores(c);
+  const blended=voteScore*18+data.edge;
+  let verdict=Math.abs(blended)<14?'hold':(blended>0?'buy':'sell');
+  const confidence=Math.round(clamp(52+Math.abs(blended)*.55,52,82));
+  const apiNote=err?`模型暫不可用，已使用本地規則備援。`:'已使用本地規則備援。';
+  const summary=`${apiNote}目前綜合投票為多${cnt.buy}/觀${cnt.hold}/空${cnt.sell}，資料分數買${data.buy}、賣${data.sell}。此裁決只使用即時行情、K線、OI、資金費率與多空比，等 API 恢復後可再跑一次完整 AI 討論。`;
+  if(verdict==='hold'||!Number.isFinite(price)||price<=0){
+    return {verdict:'hold',position:'0%',confidence,entry:null,stopLoss:null,takeProfit:null,rr:'—',summary};
+  }
+  const atr=Number(c.atr||0);
+  const baseRisk=Math.max(price*.006,Number.isFinite(atr)&&atr>0?atr*1.2:price*.01);
+  const risk=Math.min(price*.04,baseRisk);
+  const entry=roundTradePrice(price,price);
+  const stopLoss=roundTradePrice(verdict==='buy'?price-risk:price+risk,price);
+  const takeProfit=roundTradePrice(verdict==='buy'?price+risk*2:price-risk*2,price);
+  const position=confidence>=74?'60%':confidence>=64?'45%':'30%';
+  return {verdict,position,confidence,entry,stopLoss,takeProfit,rr:'1:2.00',summary};
 }
 
 function marketFeatures(c){
@@ -782,7 +906,7 @@ function marketBrief(c){
 }
 
 function finalModelConfig(){
-  return {provider:'gemini',model:localStorage.getItem('geminiFinalModel')||'gemini-2.5-flash',noFallback:true};
+  return {provider:'gemini',model:localStorage.getItem('geminiFinalModel')||'gemini-2.5-flash'};
 }
 
 function providerRoute(provider){
@@ -799,9 +923,9 @@ function aiRoutes(route=null){
   return order.map(providerRoute);
 }
 
-// 分析師專用路由：前面討論固定走 Groq；Gemini 只留給總指揮裁決/總整理，避免消耗過快
+// 分析師專用路由：Groq 優先；若地區/額度不通，自動改用 Gemini/OpenAI/Claude。
 function analystRoute(){
-  return {provider:'groq',model:MODEL,noFallback:true};
+  return {provider:'groq',model:MODEL};
 }
 
 function providerName(provider){
@@ -839,8 +963,8 @@ async function groq(system,user,retries=3,route=null){
         await sleep(wait);
         continue;
       }
-      if(provider==='groq'&&isGroqBlockedText(t)){
-        errors.push('Groq 目前地區不支援，已自動改用備援模型');
+      if(isGroqBlockedText(t)){
+        errors.push(`${providerName(provider)} 回傳地區限制，已自動改用備援模型`);
         break;
       }
       errors.push(`${providerName(provider)} ${res.status}: ${readableAIError(t)}`);
@@ -851,7 +975,7 @@ async function groq(system,user,retries=3,route=null){
 }
 
 function readableAIError(text){
-  if(isGroqBlockedText(text)) return '目前地區不支援 Groq API，請改用 Gemini / OpenAI / Claude';
+  if(isGroqBlockedText(text)) return '目前地區不支援此 AI 供應商，系統會自動改用備援模型或本地規則分析';
   try{
     const j=JSON.parse(text);
     return String(j.error?.message||j.message||text).slice(0,180);
@@ -903,21 +1027,21 @@ function coinHTML(c,type){
   // 詳細數據區塊（展開時顯示）
   const detailHTML=`<div class="coin-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:11px;font-family:'Chakra Petch',monospace">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;color:var(--dim);margin-bottom:8px">
-      <div>24h漲跌：<span style="color:${c.chg24>=0?'var(--green)':'var(--red)'}">${c.chg24>0?'+':''}${c.chg24}%</span></div>
-      <div>RSI(14)：<span style="color:${c.rsi>70?'var(--red)':c.rsi<30?'var(--green)':'var(--text)'}">${c.rsi}</span></div>
-      <div>5m變化：<span style="color:${(c.chg5m||0)>=0?'var(--green)':'var(--red)'}">${c.chg5m>0?'+':''}${c.chg5m||0}%</span></div>
-      <div>15m變化：<span style="color:${(c.chg15m||0)>=0?'var(--green)':'var(--red)'}">${c.chg15m>0?'+':''}${c.chg15m||0}%</span></div>
-      <div>量倍數：${c.volMult||1}x</div>
-      <div>OI 5m：<span style="color:${(c.oiChg5m||0)>=0?'var(--green)':'var(--red)'}">${c.oiChg5m>0?'+':''}${c.oiChg5m||0}%</span></div>
-      <div>資金費率：<span style="color:${c.funding>0?'var(--amber)':'var(--cyan)'}">${c.funding>0?'+':''}${c.funding}%</span></div>
-      <div>24h成交額：${(c.volUSDT/1e6).toFixed(0)}M</div>
-      <div>全帳戶多空比：${c.derivatives?.globalLongShort?.longShortRatio??'—'}</div>
-      <div>頭部持倉多空比：${c.derivatives?.topTraderPosition?.longShortRatio??'—'}</div>
-      <div>主動買賣比：${c.derivatives?.takerBuySell?.longShortRatio??'—'}</div>
-      <div>OKX價格：${c.okx?.price?'$'+c.okx.price:'—'}</div>
-      <div>OKX資金：${c.derivatives?.okx?.fundingRatePct??'—'}%</div>
-      <div>OKX OI：${c.derivatives?.okx?.openInterestCcy??c.derivatives?.okx?.openInterest??'—'}</div>
-      <div>OKX多空比：${c.derivatives?.okx?.longShortRatio?.ratio??'—'}</div>
+      <div>24h漲跌：<span data-live-sym="${c.sym}" data-live="chg24" style="color:${c.chg24>=0?'var(--green)':'var(--red)'}">${c.chg24>0?'+':''}${c.chg24}%</span></div>
+      <div>RSI(14)：<span data-live-sym="${c.sym}" data-live="rsi" style="color:${c.rsi>70?'var(--red)':c.rsi<30?'var(--green)':'var(--text)'}">${c.rsi}</span></div>
+      <div>5m變化：<span data-live-sym="${c.sym}" data-live="chg5m" style="color:${(c.chg5m||0)>=0?'var(--green)':'var(--red)'}">${c.chg5m>0?'+':''}${c.chg5m||0}%</span></div>
+      <div>15m變化：<span data-live-sym="${c.sym}" data-live="chg15m" style="color:${(c.chg15m||0)>=0?'var(--green)':'var(--red)'}">${c.chg15m>0?'+':''}${c.chg15m||0}%</span></div>
+      <div>量倍數：<span data-live-sym="${c.sym}" data-live="volMult">${c.volMult||1}x</span></div>
+      <div>OI 5m：<span data-live-sym="${c.sym}" data-live="oiChg5m" style="color:${(c.oiChg5m||0)>=0?'var(--green)':'var(--red)'}">${c.oiChg5m>0?'+':''}${c.oiChg5m||0}%</span></div>
+      <div>資金費率：<span data-live-sym="${c.sym}" data-live="funding" style="color:${c.funding>0?'var(--amber)':'var(--cyan)'}">${c.funding>0?'+':''}${c.funding}%</span></div>
+      <div>24h成交額：<span data-live-sym="${c.sym}" data-live="volUSDT">${(c.volUSDT/1e6).toFixed(0)}M</span></div>
+      <div>全帳戶多空比：<span data-live-sym="${c.sym}" data-live="globalLS">${c.derivatives?.globalLongShort?.longShortRatio??'—'}</span></div>
+      <div>頭部持倉多空比：<span data-live-sym="${c.sym}" data-live="topLS">${c.derivatives?.topTraderPosition?.longShortRatio??'—'}</span></div>
+      <div>主動買賣比：<span data-live-sym="${c.sym}" data-live="takerRatio">${c.derivatives?.takerBuySell?.longShortRatio??'—'}</span></div>
+      <div>OKX價格：<span data-live-sym="${c.sym}" data-live="okxPrice">${c.okx?.price?'$'+c.okx.price:'—'}</span></div>
+      <div>OKX資金：<span data-live-sym="${c.sym}" data-live="okxFunding">${c.derivatives?.okx?.fundingRatePct??'—'}%</span></div>
+      <div>OKX OI：<span data-live-sym="${c.sym}" data-live="okxOi">${c.derivatives?.okx?.openInterestCcy??c.derivatives?.okx?.openInterest??'—'}</span></div>
+      <div>OKX多空比：<span data-live-sym="${c.sym}" data-live="okxLS">${c.derivatives?.okx?.longShortRatio?.ratio??'—'}</span></div>
       <div>SMC結構：${c.smc?.structure??'—'}</div>
       <div>BOS/CHoCH：${c.smc?.bos??'—'} / ${c.smc?.choch??'—'}</div>
       <div>SMC區域：${c.smc?.zone??'—'}</div>
@@ -1075,10 +1199,10 @@ function renderAllCoinList(){
       </div>
       <div class="coin-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:11px;font-family:'Chakra Petch',monospace">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;color:var(--dim);margin-bottom:8px">
-          <div>24h漲跌：<span style="color:${(c.chg24||0)>=0?'var(--green)':'var(--red)'}">${c.chg24>0?'+':''}${c.chg24}%</span></div>
-          <div>24h成交額：${(c.volUSDT/1e6).toFixed(0)}M</div>
-          <div>資金費率：${c.funding>0?'+':''}${c.funding}%</div>
-          <div>OKX價格：${c.okx?.price?'$'+c.okx.price:'—'}</div>
+	          <div>24h漲跌：<span data-live-sym="${esc(c.sym)}" data-live="chg24" style="color:${(c.chg24||0)>=0?'var(--green)':'var(--red)'}">${c.chg24>0?'+':''}${c.chg24}%</span></div>
+	          <div>24h成交額：<span data-live-sym="${esc(c.sym)}" data-live="volUSDT">${(c.volUSDT/1e6).toFixed(0)}M</span></div>
+	          <div>資金費率：<span data-live-sym="${esc(c.sym)}" data-live="funding">${c.funding>0?'+':''}${c.funding}%</span></div>
+	          <div>OKX價格：<span data-live-sym="${esc(c.sym)}" data-live="okxPrice">${c.okx?.price?'$'+c.okx.price:'—'}</span></div>
         </div>
         <div class="watch-actions">
           <button class="btn analyze-btn" data-sym="${esc(c.sym)}" style="flex:1;min-width:180px;padding:8px;font-size:11px">▸ 啟動 9 位 AI 討論</button>
@@ -1657,6 +1781,7 @@ async function doScan(silent=false){
         return {
           ...c,
           rsi:m?m.rsi:50, chg5m:m?m.chg5m:0, chg15m:m?m.chg15m:0, volMult:m?m.volMult:1,
+          ref5m:m?m.ref5m:null, ref15m:m?m.ref15m:null,
           ema20:m?m.ema20:null, ema50:m?m.ema50:null, macd:m?m.macd:null, bb:m?m.bb:null,
           atr:m?m.atr:null, sr:m?m.sr:null, smc:m?m.smc:null, trend:m?m.trend:'未知',
           oiChg5m:oiChg, derivatives:deriv, liqSpike:0
@@ -1735,9 +1860,9 @@ async function analyze(sym){
           dataUsed:r.dataUsed||'—',triggers:r.triggers||'—'};
         paint(a.id,v,R1[a.id].confidence,R1[a.id].reason,false,{data:R1[a.id].dataUsed,triggers:R1[a.id].triggers});
       }catch(e){
-        const msg=String(e.message||e).slice(0,80);
-        R1[a.id]={verdict:'hold',confidence:50,reason:'分析失敗：'+msg};
-        paint(a.id,'hold',50,'⚠ '+msg,false,null);
+        const fb=fallbackAgentVote(a,c,e);
+        R1[a.id]=fb;
+        paint(a.id,fb.verdict,fb.confidence,fb.reason,false,{data:fb.dataUsed,triggers:fb.triggers});
       }
       step++;
       setProgress('pbStatus',step,totalSteps,`第一輪完成 ${step}/${totalSteps}`);
@@ -1759,7 +1884,12 @@ async function analyze(sym){
           R2[a.id]={verdict:v,confidence:r.confidence||R1[a.id].confidence,reason:r.reason||'—',changed:ch,
             dataUsed:r.dataUsed||R1[a.id].dataUsed,triggers:r.triggers||R1[a.id].triggers};
           paint(a.id,v,R2[a.id].confidence,R2[a.id].reason,ch,{data:R2[a.id].dataUsed,triggers:R2[a.id].triggers});
-        }catch(e){R2[a.id]={...R1[a.id],changed:false};}
+        }catch(e){
+          const fb=fallbackAgentVote(a,c,e,R1[a.id]);
+          fb.changed=fb.verdict!==R1[a.id].verdict;
+          R2[a.id]=fb;
+          paint(a.id,fb.verdict,fb.confidence,fb.reason,fb.changed,{data:fb.dataUsed,triggers:fb.triggers});
+        }
         step++;
         setProgress('pbStatus',step,totalSteps,`第二輪完成 ${step}/${totalSteps}`);
         await sleep(400);
@@ -1777,7 +1907,12 @@ async function analyze(sym){
       `回JSON:{"verdict":"buy/sell/hold","position":"倉位如60%","confidence":0-100,`+
       `"entry":進場價數字,"stopLoss":止損價數字,"takeProfit":止盈價數字,"rr":"盈虧比如1:2.3",`+
       `"summary":"繁中3-4句:權衡、理由、風險提示"}。若觀望則entry/stopLoss/takeProfit填null。`;
-    const r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n現價:${c.price}\n模式:${mode.label}\n討論後意見:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`,3,finalModelConfig()));
+    let r;
+    try{
+      r=pj(await groq(sys,`${sym}結構化市場資料:\n${dataStr}\n現價:${c.price}\n模式:${mode.label}\n討論後意見:\n${board2}\n票數 多${cnt.buy}觀${cnt.hold}空${cnt.sell}`,3,finalModelConfig()));
+    }catch(e){
+      r=fallbackFinalVerdict(sym,c,agents,R2,cnt,mode,e);
+    }
     const v=['buy','sell','hold'].includes(r.verdict)?r.verdict:'hold';
     r.verdict=v;
     $('verdict').classList.remove('hidden');
@@ -2827,7 +2962,12 @@ function updateLivePrice(sym,price,source='WS'){
   });
   lastPrices[sym]=price;
   const idx=MKT.findIndex(x=>x.sym===sym);
-  if(idx>=0) MKT[idx].price=price;
+  if(idx>=0){
+    MKT[idx].price=price;
+    if(MKT[idx].ref5m) MKT[idx].chg5m=+(((price-MKT[idx].ref5m)/MKT[idx].ref5m)*100).toFixed(2);
+    if(MKT[idx].ref15m) MKT[idx].chg15m=+(((price-MKT[idx].ref15m)/MKT[idx].ref15m)*100).toFixed(2);
+  }
+  updateLiveDetails(sym);
   if(source!=='chart') updateOpenChartFromPrice(sym,Number(price));
   if(RECS.length>0&&Date.now()-lastRecRenderAt>1600){
     const priceMap={};MKT.forEach(c=>priceMap[c.sym]=c.price);
@@ -2846,6 +2986,49 @@ function updateLiveChange(sym,chg24){
   });
   const idx=MKT.findIndex(x=>x.sym===sym);
   if(idx>=0) MKT[idx].chg24=+chg24.toFixed(2);
+  updateLiveDetails(sym);
+}
+
+function signedPct(v,digits=2){
+  v=Number(v);
+  if(!Number.isFinite(v)) return '—';
+  return `${v>0?'+':''}${v.toFixed(digits)}%`;
+}
+
+function liveMetric(c,key){
+  if(!c) return {text:'—'};
+  if(key==='chg24') return {text:signedPct(c.chg24),color:(c.chg24||0)>=0?'var(--green)':'var(--red)'};
+  if(key==='rsi') return {text:String(c.rsi??'—'),color:(c.rsi??50)>70?'var(--red)':(c.rsi??50)<30?'var(--green)':'var(--text)'};
+  if(key==='chg5m') return {text:signedPct(c.chg5m),color:(c.chg5m||0)>=0?'var(--green)':'var(--red)'};
+  if(key==='chg15m') return {text:signedPct(c.chg15m),color:(c.chg15m||0)>=0?'var(--green)':'var(--red)'};
+  if(key==='volMult') return {text:`${Number(c.volMult||1).toFixed(1)}x`};
+  if(key==='oiChg5m') return {text:signedPct(c.oiChg5m),color:(c.oiChg5m||0)>=0?'var(--green)':'var(--red)'};
+  if(key==='funding') return {text:signedPct(c.funding,4),color:(c.funding||0)>0?'var(--amber)':'var(--cyan)'};
+  if(key==='volUSDT') return {text:`${((c.volUSDT||0)/1e6).toFixed(0)}M`};
+  if(key==='globalLS') return {text:c.derivatives?.globalLongShort?.longShortRatio??'—'};
+  if(key==='topLS') return {text:c.derivatives?.topTraderPosition?.longShortRatio??'—'};
+  if(key==='takerRatio') return {text:c.derivatives?.takerBuySell?.longShortRatio??'—'};
+  if(key==='okxPrice') return {text:c.okx?.price?'$'+formatPrice(c.okx.price):'—'};
+  if(key==='okxFunding') return {text:(c.derivatives?.okx?.fundingRatePct??'—')+'%'};
+  if(key==='okxOi') return {text:c.derivatives?.okx?.openInterestCcy??c.derivatives?.okx?.openInterest??'—'};
+  if(key==='okxLS') return {text:c.derivatives?.okx?.longShortRatio?.ratio??'—'};
+  return {text:'—'};
+}
+
+function updateLiveDetails(sym){
+  const c=MKT.find(x=>x.sym===sym);
+  if(!c) return;
+  document.querySelectorAll(`[data-live-sym="${sym}"][data-live]`).forEach(el=>{
+    const m=liveMetric(c,el.getAttribute('data-live'));
+    const old=el.textContent;
+    el.textContent=m.text;
+    if(m.color) el.style.color=m.color;
+    if(old!==m.text){
+      el.classList.remove('flash-up','flash-dn');
+      void el.offsetWidth;
+      el.classList.add((c.chg5m||c.chg24||0)>=0?'flash-up':'flash-dn');
+    }
+  });
 }
 
 async function syncLatestExchangePrices(){
