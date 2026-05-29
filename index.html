@@ -3474,8 +3474,8 @@ function flash(msg,type){
 }
 
 // ---------- 即時更新 ----------
-let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0, lastWsTickAt=0, wsMode='combined';
-let PRICE_WS_LIST=[];
+let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0, lastWsTickAt=0, lastBinanceWsTickAt=0, lastOkxWsTickAt=0, wsMode='combined';
+let PRICE_WS_LIST=[],OKX_PRICE_WS_LIST=[];
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 let lastTradeTicks={}; // 成交流最後更新時間，用來避免 ticker 覆蓋實時成交價
 let lastPriceFallbackAt=0,lastOkxPriceSyncAt=0,lastAlertSaveAt=0;
@@ -3500,7 +3500,15 @@ function setLiveText(text,count=null){
 }
 
 function hasActivePriceWS(){
+  return [...PRICE_WS_LIST,...OKX_PRICE_WS_LIST].some(ws=>ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING));
+}
+
+function hasActiveBinancePriceWS(){
   return PRICE_WS_LIST.some(ws=>ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING));
+}
+
+function hasActiveOkxPriceWS(){
+  return OKX_PRICE_WS_LIST.some(ws=>ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING));
 }
 
 function handlePriceWsPayload(d){
@@ -3523,73 +3531,183 @@ function handlePriceWsPayload(d){
   }
 }
 
-function connectPriceWS(mode='combined',force=false){
-  const marketPairs=MKT.filter(c=>c.hasBinance!==false).slice(0,90).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase());
-  const watchPairs=(WATCHLIST||[]).map(w=>{
-    const sym=normalizeWatchSymbol(typeof w==='string'?w:w.sym||w.id);
-    const row=MKT.find(c=>c.sym===sym);
-    return row&&row.hasBinance===false?'':`${sym}USDT`.toLowerCase();
+function priorityTradePairs(){
+  const pairs=new Set();
+  const addSym=sym=>{
+    const s=normalizeWatchSymbol(sym);
+    if(!s) return;
+    const row=MKT.find(c=>c.sym===s);
+    if(row&&row.hasBinance===false) return;
+    pairs.add(`${s}USDT`.toLowerCase());
+  };
+  const addCoin=c=>{
+    if(!c||c.hasBinance===false) return;
+    const pair=String(c.pair||`${c.sym}USDT`).toLowerCase();
+    if(/^[a-z0-9]+usdt$/.test(pair)) pairs.add(pair);
+  };
+  (MKT||[]).filter(c=>c.hasBinance!==false).slice(0,40).forEach(addCoin);
+  [...(SCREENED.long||[]),...(SCREENED.short||[]),...(SCREENED.alert||[])].slice(0,36).forEach(addCoin);
+  (WATCHLIST||[]).forEach(w=>addSym(typeof w==='string'?w:w.sym||w.id));
+  visibleAlertRecords().slice(0,36).forEach(r=>addSym(r.sym));
+  return [...pairs].filter(p=>/^[a-z0-9]+usdt$/.test(p)).slice(0,80);
+}
+
+function okxTickerInstIds(){
+  return (MKT||[])
+    .filter(c=>c.hasOkx)
+    .map(c=>c.okx?.instId||okxInstId(c.sym))
+    .filter(Boolean);
+}
+
+function updateOkxLivePrice(sym,price,chg24=null){
+  const s=exchangeSymbol(sym);
+  const p=Number(price);
+  if(!s||!Number.isFinite(p)) return;
+  const idx=MKT.findIndex(x=>x.sym===s);
+  if(idx>=0){
+    MKT[idx].okx={...(MKT[idx].okx||{}),price:p};
+    if(Number.isFinite(chg24)){
+      MKT[idx].okx.chg24=+Number(chg24).toFixed(2);
+      if(MKT[idx].hasBinance===false) MKT[idx].chg24=+Number(chg24).toFixed(2);
+    }
+    if(MKT[idx].hasBinance===false){
+      updateLivePrice(s,p,'OKX WS');
+      return;
+    }
+  }
+  updateLiveDetails(s);
+}
+
+function handleOkxTickerRow(row){
+  if(!row?.instId) return;
+  const sym=exchangeSymbol(row.instId);
+  const price=Number(row.last);
+  const open24=Number(row.open24h||0);
+  const chg24=Number.isFinite(price)&&open24?((price-open24)/open24*100):null;
+  updateOkxLivePrice(sym,price,chg24);
+}
+
+function openBinanceAllTickerWS(binanceCount){
+  const ws=new WebSocket('wss://fstream.binance.com/ws/!ticker@arr');
+  ws.onopen=()=>{
+    setLiveText('Binance全市場WS',binanceCount);
+  };
+  ws.onmessage=(event)=>{
+    try{
+      const msg=JSON.parse(event.data);
+      const rows=Array.isArray(msg)?msg:(Array.isArray(msg.data)?msg.data:[msg.data||msg]);
+      lastWsTickAt=lastBinanceWsTickAt=Date.now();
+      rows.forEach(row=>{
+        const pair=String(row.s||'').toUpperCase();
+        if(pair.endsWith('USDT')) handlePriceWsPayload(row);
+      });
+    }catch(e){}
+  };
+  ws.onclose=()=>{
+    if(!PRICE_WS_MANUAL&&liveOn){
+      setLiveText('Binance WS 重連中',binanceCount);
+      clearTimeout(PRICE_WS_TIMER);
+      PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2200);
+    }
+  };
+  ws.onerror=()=>{
+    setLiveText('Binance WS 錯誤',binanceCount);
+    try{ws.close();}catch(e){}
+  };
+  PRICE_WS_LIST.push(ws);
+}
+
+function openBinanceTradeWS(pairs){
+  chunkArray(pairs,18).forEach(chunk=>{
+    const streams=chunk.flatMap(p=>[`${p}@trade`,`${p}@aggTrade`]).join('/');
+    const ws=new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
+    ws.onmessage=(event)=>{
+      try{
+        const msg=JSON.parse(event.data);
+        const payload=Array.isArray(msg)?msg:(Array.isArray(msg.data)?msg.data:[msg.data||msg]);
+        lastWsTickAt=lastBinanceWsTickAt=Date.now();
+        payload.forEach(handlePriceWsPayload);
+      }catch(e){}
+    };
+    ws.onclose=()=>{
+      if(!PRICE_WS_MANUAL&&liveOn){
+        clearTimeout(PRICE_WS_TIMER);
+        PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2200);
+      }
+    };
+    ws.onerror=()=>{ try{ws.close();}catch(e){} };
+    PRICE_WS_LIST.push(ws);
   });
-  const pairs=[...new Set([...marketPairs,...watchPairs].filter(p=>/^[a-z0-9]+usdt$/.test(p)))];
-  if(pairs.length===0){
+}
+
+function openOkxTickerWS(instIds){
+  chunkArray(instIds,60).forEach(chunk=>{
+    const ws=new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
+    ws.onopen=()=>{
+      try{
+        ws.send(JSON.stringify({op:'subscribe',args:chunk.map(instId=>({channel:'tickers',instId}))}));
+        ws._pingTimer=setInterval(()=>{ try{ if(ws.readyState===WebSocket.OPEN) ws.send('ping'); }catch(e){} },25000);
+      }catch(e){}
+    };
+    ws.onmessage=(event)=>{
+      try{
+        if(event.data==='pong') return;
+        const msg=JSON.parse(event.data);
+        if(Array.isArray(msg.data)){
+          lastWsTickAt=lastOkxWsTickAt=Date.now();
+          msg.data.forEach(handleOkxTickerRow);
+        }
+      }catch(e){}
+    };
+    ws.onclose=()=>{
+      clearInterval(ws._pingTimer);
+      if(!PRICE_WS_MANUAL&&liveOn){
+        clearTimeout(PRICE_WS_TIMER);
+        PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2600);
+      }
+    };
+    ws.onerror=()=>{ try{ws.close();}catch(e){} };
+    OKX_PRICE_WS_LIST.push(ws);
+  });
+}
+
+function connectPriceWS(mode='combined',force=false){
+  const binanceCount=(MKT||[]).filter(c=>c.hasBinance!==false).length;
+  const tradePairs=priorityTradePairs();
+  const okxInstIds=okxTickerInstIds();
+  if(binanceCount===0&&okxInstIds.length===0){
     setLiveText('等待掃描清單',0);
     return;
   }
-  const streamKey=`combined:${pairs.join(',')}`;
+  const streamKey=`global:${binanceCount}:${tradePairs.join(',')}:okx:${okxInstIds.join(',')}`;
   if(!force&&PRICE_WS_KEY===streamKey&&hasActivePriceWS()){
     return;
   }
   closePriceWS();
   PRICE_WS_MANUAL=false;
   wsMode='combined';
-  lastWsTickAt=Date.now();
+  lastWsTickAt=lastBinanceWsTickAt=lastOkxWsTickAt=Date.now();
   PRICE_WS_KEY=streamKey;
-  PRICE_WS_LIST=chunkArray(pairs,18).map((chunk,idx)=>{
-    const streams=chunk.flatMap(p=>[`${p}@trade`,`${p}@aggTrade`,`${p}@ticker`]).join('/');
-    const ws=new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
-    ws.onopen=()=>{
-      if(idx===0) setLiveText('WS 實時成交',pairs.length);
-      setTimeout(()=>{
-        if(liveOn&&Date.now()-lastWsTickAt>4300&&mode==='combined'){
-          setLiveText('WS 實時成交等待中',pairs.length);
-        }
-      },4500);
-    };
-    ws.onmessage=(event)=>{
-      try{
-        const msg=JSON.parse(event.data);
-        const payload=Array.isArray(msg)?msg:(Array.isArray(msg.data)?msg.data:[msg.data||msg]);
-        lastWsTickAt=Date.now();
-        payload.forEach(handlePriceWsPayload);
-      }catch(e){}
-    };
-    ws.onclose=()=>{
-      if(!PRICE_WS_MANUAL&&liveOn){
-        setLiveText('WS 重連中',pairs.length);
-        clearTimeout(PRICE_WS_TIMER);
-        PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2200);
-      }
-    };
-    ws.onerror=()=>{
-      setLiveText('WS 錯誤 · 重連中',pairs.length);
-      try{ws.close();}catch(e){}
-    };
-    return ws;
-  });
+  if(binanceCount>0) openBinanceAllTickerWS(binanceCount);
+  if(tradePairs.length>0) openBinanceTradeWS(tradePairs);
+  if(okxInstIds.length>0) openOkxTickerWS(okxInstIds);
+  setLiveText(`全市場WS + 重點成交`,binanceCount+okxInstIds.length);
 }
 
 function closePriceWS(){
   PRICE_WS_MANUAL=true;
   clearTimeout(PRICE_WS_TIMER);
-  PRICE_WS_LIST.forEach(ws=>{
+  [...PRICE_WS_LIST,...OKX_PRICE_WS_LIST].forEach(ws=>{
     if(!ws) return;
     try{
+      clearInterval(ws._pingTimer);
       ws.onclose=null;
       ws.onerror=null;
       ws.close();
     }catch(e){}
   });
   PRICE_WS_LIST=[];
+  OKX_PRICE_WS_LIST=[];
   PRICE_WS_KEY='';
 }
 
@@ -3730,9 +3848,11 @@ async function tickPrices(){
   if(document.hidden) return; // 分頁在背景時跳過，省請求
   renderLiveText();
   try{
-    if(liveOn&&(!hasActivePriceWS()||Date.now()-lastWsTickAt>2800)){
-      if(!hasActivePriceWS()||Date.now()-lastWsTickAt>12000){
-        if(!hasActivePriceWS()) setLiveText('WS 重連中');
+    const needBinance=(MKT||[]).some(c=>c.hasBinance!==false);
+    const needOkx=(MKT||[]).some(c=>c.hasOkx);
+    if(liveOn&&needBinance&&(!hasActiveBinancePriceWS()||Date.now()-lastBinanceWsTickAt>6000)){
+      if(!hasActiveBinancePriceWS()||Date.now()-lastBinanceWsTickAt>12000){
+        if(!hasActiveBinancePriceWS()) setLiveText('Binance WS 重連中');
         connectPriceWS('combined',true);
       }
       if(Date.now()-lastPriceFallbackAt>1200){
@@ -3740,7 +3860,13 @@ async function tickPrices(){
         await syncLatestExchangePrices();
       }
     }
-    if(liveOn&&Date.now()-lastOkxPriceSyncAt>3500){
+    if(liveOn&&needOkx&&(!hasActiveOkxPriceWS()||Date.now()-lastOkxWsTickAt>12000)){
+      if(!hasActiveOkxPriceWS()||Date.now()-lastOkxWsTickAt>24000) connectPriceWS('combined',true);
+      if(Date.now()-lastOkxPriceSyncAt>3500){
+        lastOkxPriceSyncAt=Date.now();
+        await syncOkxLatestPrices();
+      }
+    }else if(liveOn&&needOkx&&Date.now()-lastOkxPriceSyncAt>30000){
       lastOkxPriceSyncAt=Date.now();
       await syncOkxLatestPrices();
     }
