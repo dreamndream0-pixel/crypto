@@ -71,8 +71,8 @@
   .alert-board-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;}
   @media(max-width:900px){.alert-board{position:relative;top:auto}.alert-board-grid{grid-template-columns:1fr;}}
   .alert-lane-title{font-size:11px;font-weight:900;font-family:'Chakra Petch',monospace;margin:0 0 8px;display:flex;align-items:center;gap:7px;}
-  .alert-card-list{display:grid;gap:9px;max-height:230px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent;padding-right:2px;}
-  .alert-card{position:relative;min-height:116px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(145deg,rgba(26,30,42,.9),rgba(14,18,27,.74));padding:12px 12px 12px 16px;box-shadow:0 10px 28px rgba(0,0,0,.24);overflow:visible;}
+  .alert-card-list{display:flex;flex-direction:column;gap:9px;max-height:230px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent;padding-right:2px;}
+  .alert-card{position:relative;flex:0 0 auto;min-height:116px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(145deg,rgba(26,30,42,.9),rgba(14,18,27,.74));padding:12px 12px 12px 16px;box-shadow:0 10px 28px rgba(0,0,0,.24);overflow:hidden;}
   .alert-card.open{border-color:rgba(54,226,226,.55);box-shadow:0 12px 32px rgba(54,226,226,.12),0 10px 28px rgba(0,0,0,.24);}
   .alert-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--amber);box-shadow:0 0 18px currentColor;}
   .alert-card.bull::before{background:linear-gradient(180deg,var(--green),var(--cyan));}
@@ -80,7 +80,7 @@
   .alert-card-top{display:flex;align-items:center;gap:7px;margin-bottom:8px;}
   .alert-token{width:23px;height:23px;border-radius:7px;display:grid;place-items:center;background:rgba(255,182,39,.12);border:1px solid rgba(255,182,39,.28);font-size:12px;}
   .alert-sym{font-family:'Chakra Petch',monospace;font-size:15px;font-weight:900;color:var(--text);}
-  .alert-tv{font-family:'Chakra Petch',monospace;font-size:9px;border:1px solid var(--line);border-radius:999px;padding:2px 6px;color:var(--dim);}
+  .alert-chart-icon{width:24px;height:24px;font-size:12px;color:var(--cyan);border-color:rgba(54,226,226,.22);background:rgba(54,226,226,.06);}
   .alert-close{margin-left:auto;width:23px;height:23px;border-radius:7px;border:1px solid var(--line);background:rgba(255,255,255,.02);color:var(--dim);cursor:pointer;}
   .alert-close:hover{color:var(--red);border-color:var(--red);}
   .alert-toggle{width:auto;height:23px;border-radius:7px;border:1px solid var(--line);background:rgba(54,226,226,.06);color:var(--cyan);cursor:pointer;font-family:'Chakra Petch',monospace;font-size:10px;padding:0 7px;}
@@ -938,11 +938,12 @@ function alertCardHTML(row){
   const pctColor=pct===null?'var(--dim)':pct>=0?'var(--green)':'var(--red)';
   const open=ALERT_OPEN_IDS.has(row.alertId);
   const tracked=isAlertTracked(row.alertId);
+  const pair=row.pair||`${row.sym}USDT`;
   return `<div class="alert-card ${isBull?'bull':'bear'} ${open?'open':''}" data-alert-card-id="${esc(row.alertId)}">
     <div class="alert-card-top">
       <span class="alert-token">⚡</span>
       <span class="alert-sym">${esc(row.sym)}</span>
-      <span class="alert-tv">TV</span>
+      <button class="icon-btn chart-icon alert-chart-icon" data-chart-sym="${esc(row.sym)}" data-chart-pair="${esc(pair)}" title="查看K線">▥</button>
       <span class="chip" style="color:${color};border-color:${color}">${esc(row.recommendation||'持倉異常')}</span>
       <button class="alert-toggle" data-alert-toggle="${esc(row.alertId)}">${open?'收合':'展開資訊'}</button>
       <button class="alert-close" data-alert-close="${esc(row.alertId)}" title="關閉">×</button>
@@ -1019,6 +1020,12 @@ function renderAlertBoard(){
       analyze(btn.getAttribute('data-alert-analyze'));
     };
   });
+  document.querySelectorAll('#alertBoard .chart-icon').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      openKlineModal(btn.getAttribute('data-chart-sym'),btn.getAttribute('data-chart-pair'));
+    };
+  });
 }
 
 function renderAlertTracks(){
@@ -1042,6 +1049,7 @@ function renderAlertTracks(){
     return `<div class="track-card" data-alert-track-card="${esc(row.trackId)}">
       <div class="track-head">
         <span class="track-sym">${esc(row.sym)}</span>
+        <button class="icon-btn chart-icon alert-chart-icon" data-chart-sym="${esc(row.sym)}" data-chart-pair="${esc(row.pair||`${row.sym}USDT`)}" title="查看K線">▥</button>
         <span class="chip" style="color:${color};border-color:${color}">${row.dir==='up'?'看漲':'看跌'}</span>
         <button class="icon-btn alert-track-remove" data-alert-track-remove="${esc(row.trackId)}" title="移除追蹤" style="margin-left:auto;color:var(--red)">×</button>
       </div>
@@ -1065,6 +1073,12 @@ function renderAlertTracks(){
     btn.onclick=(e)=>{
       e.stopPropagation();
       analyze(btn.getAttribute('data-alert-track-analyze'));
+    };
+  });
+  box.querySelectorAll('.chart-icon').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      openKlineModal(btn.getAttribute('data-chart-sym'),btn.getAttribute('data-chart-pair'));
     };
   });
 }
