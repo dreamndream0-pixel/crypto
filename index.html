@@ -60,12 +60,13 @@
   .market-panel{display:none;}
   .market-panel.active{display:block;}
   .single-panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;}
-  .signal-strip{grid-template-columns:1fr 1fr;margin-bottom:13px;}
-  @media(max-width:900px){.signal-strip{grid-template-columns:1fr;}}
+  .overview-grid{grid-template-columns:minmax(320px,1.35fr) minmax(260px,1fr) minmax(260px,1fr);}
+  .oi-alert-layout{display:grid;grid-template-columns:minmax(420px,1.2fr) minmax(320px,.9fr);gap:13px;align-items:start;}
+  @media(max-width:1100px){.overview-grid,.oi-alert-layout{grid-template-columns:1fr;}}
   .scroll-list{max-height:522px;overflow-y:auto;scrollbar-color:var(--line) var(--panel);scrollbar-width:thin;}
   .scroll-list::-webkit-scrollbar{width:7px;}
   .scroll-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:999px;}
-  .alert-board{position:sticky;top:70px;z-index:30;margin:0 0 13px;border:1px solid rgba(255,182,39,.3);border-radius:14px;background:linear-gradient(160deg,rgba(17,21,31,.92),rgba(8,11,17,.84));box-shadow:0 16px 42px rgba(0,0,0,.28);backdrop-filter:blur(14px);overflow:hidden;}
+  .alert-board{position:sticky;top:70px;z-index:30;border:1px solid rgba(255,182,39,.3);border-radius:14px;background:linear-gradient(160deg,rgba(17,21,31,.92),rgba(8,11,17,.84));box-shadow:0 16px 42px rgba(0,0,0,.28);backdrop-filter:blur(14px);overflow:hidden;}
   .alert-board-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);font-family:'Chakra Petch',monospace;font-size:12px;font-weight:800;color:var(--amber);}
   .alert-board-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;}
   @media(max-width:900px){.alert-board{position:relative;top:auto}.alert-board-grid{grid-template-columns:1fr;}}
@@ -248,25 +249,12 @@
       <button class="market-tab" data-market-tab="watch">追蹤貨幣</button>
       <button class="market-tab" data-market-tab="oi">OI 儀表板</button>
     </div>
-    <div class="alert-board" id="alertBoard">
-      <div class="alert-board-head">
-        <span>⚡ 持倉異常固定警報卡</span>
-        <span class="chip">手動按 X 才會關閉</span>
-        <span class="chip">刷新頁面保留</span>
-      </div>
-      <div class="alert-board-grid">
-        <div>
-          <div class="alert-lane-title" style="color:var(--green)">▲ 看漲推薦 <span class="chip" id="alertBullCount">0</span></div>
-          <div class="alert-card-list" id="alertBullCards"></div>
-        </div>
-        <div>
-          <div class="alert-lane-title" style="color:var(--red)">▼ 看跌推薦 <span class="chip" id="alertBearCount">0</span></div>
-          <div class="alert-card-list" id="alertBearCards"></div>
-        </div>
-      </div>
-    </div>
     <div class="market-panel active" id="panelAll">
-      <div class="scan signal-strip">
+      <div class="scan overview-grid">
+        <div class="col all">
+          <div class="col-head">◎ 貨幣一覽 <span class="cnt" id="cntAll">0</span></div>
+          <div id="listAllCoins" class="scroll-list"></div>
+        </div>
         <div class="col long">
           <div class="col-head">📈 做多推薦 <span class="cnt" id="cntLong">0</span></div>
           <div id="listLongSignal"></div>
@@ -276,10 +264,6 @@
           <div id="listShortSignal"></div>
         </div>
       </div>
-      <div class="single-panel">
-        <div class="col-head">◎ 貨幣一覽 <span class="cnt" id="cntAll">0</span></div>
-        <div id="listAllCoins" class="scroll-list"></div>
-      </div>
     </div>
     <div class="market-panel" id="panelWatch">
       <div class="single-panel">
@@ -288,17 +272,36 @@
       </div>
     </div>
     <div class="market-panel" id="panelOi">
-      <div class="single-panel">
-        <div class="col alert">
-          <div class="col-head">
-            ⚡ 持倉異常警報記錄
-            <span class="cnt" id="cntAlert">0</span>
-            <div class="seg">
-              <button class="seg-btn active long" data-alert-tab="long">看漲</button>
-              <button class="seg-btn short" data-alert-tab="short">看跌</button>
+      <div class="oi-alert-layout">
+        <div class="alert-board" id="alertBoard">
+          <div class="alert-board-head">
+            <span>⚡ 持倉異常固定警報卡</span>
+            <span class="chip">手動按 X 才會關閉</span>
+            <span class="chip">刷新頁面保留</span>
+          </div>
+          <div class="alert-board-grid">
+            <div>
+              <div class="alert-lane-title" style="color:var(--green)">▲ 看漲推薦 <span class="chip" id="alertBullCount">0</span></div>
+              <div class="alert-card-list" id="alertBullCards"></div>
+            </div>
+            <div>
+              <div class="alert-lane-title" style="color:var(--red)">▼ 看跌推薦 <span class="chip" id="alertBearCount">0</span></div>
+              <div class="alert-card-list" id="alertBearCards"></div>
             </div>
           </div>
-          <div id="listAlert"></div>
+        </div>
+        <div class="single-panel">
+          <div class="col alert">
+            <div class="col-head">
+              ⚡ 警報記錄
+              <span class="cnt" id="cntAlert">0</span>
+              <div class="seg">
+                <button class="seg-btn active long" data-alert-tab="long">看漲</button>
+                <button class="seg-btn short" data-alert-tab="short">看跌</button>
+              </div>
+            </div>
+            <div id="listAlert"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1556,7 +1559,9 @@ function renderTopTrackedCoins(){
   box.innerHTML=rows.map(w=>{
     const c=priceMap[w.sym];
     const t=w.createdAt?new Date(w.createdAt).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
-    const detail=c?`<div class="coin-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:11px;font-family:'Chakra Petch',monospace">
+    const open=WATCH_OPEN_IDS.has(w.sym);
+    const detailStyle=`display:${open?'block':'none'};border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:11px;`;
+    const detail=c?`<div class="coin-detail" style="${detailStyle}font-family:'Chakra Petch',monospace">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;color:var(--dim);margin-bottom:8px">
         <div>24h漲跌：<span data-live-sym="${esc(w.sym)}" data-live="chg24" style="color:${(c.chg24||0)>=0?'var(--green)':'var(--red)'}">${c.chg24>0?'+':''}${c.chg24}%</span></div>
         <div>5m變化：<span data-live-sym="${esc(w.sym)}" data-live="chg5m">${c.chg5m>0?'+':''}${c.chg5m??0}%</span></div>
@@ -1570,7 +1575,7 @@ function renderTopTrackedCoins(){
       <div class="watch-actions">
         <button class="btn analyze-btn" data-sym="${esc(w.sym)}" style="flex:1;min-width:180px;padding:8px;font-size:11px">▸ 啟動 9 位 AI 討論</button>
       </div>
-    </div>`:`<div class="coin-detail" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:11px;color:var(--dimmer)">等待下一輪掃描取得 ${esc(w.sym)} 的行情資料。</div>`;
+    </div>`:`<div class="coin-detail" style="${detailStyle}color:var(--dimmer)">等待下一輪掃描取得 ${esc(w.sym)} 的行情資料。</div>`;
     return `<div class="coin" data-sym="${esc(w.sym)}" data-type="watch">
       <div class="coin-header" style="cursor:pointer;user-select:none">
         <div class="coin-top">
@@ -1578,7 +1583,7 @@ function renderTopTrackedCoins(){
           <span class="coin-price" data-price-sym="${esc(w.sym)}">${c?'$'+formatPrice(c.price):'—'}</span>
           <button class="icon-btn chart-icon" data-chart-sym="${esc(w.sym)}" data-chart-pair="${esc(c?.pair||`${w.sym}USDT`)}" title="查看K線">▥</button>
           <button class="icon-btn top-watch-delete" data-watch-sym="${esc(w.sym)}" title="移除追蹤" style="color:var(--red)">×</button>
-          <span class="coin-toggle" style="color:var(--dimmer);font-family:'Chakra Petch',monospace;font-size:11px">▼</span>
+          <span class="coin-toggle" style="color:var(--dimmer);font-family:'Chakra Petch',monospace;font-size:11px">${open?'▲':'▼'}</span>
         </div>
         <div class="coin-meta">
           <span class="chip">${c?'24h '+((c.chg24>0?'+':'')+c.chg24+'%'):'等待掃描'}</span>
@@ -1595,10 +1600,15 @@ function renderTopTrackedCoins(){
       const card=h.closest('.coin');
       const detail=card.querySelector('.coin-detail');
       const tog=card.querySelector('.coin-toggle');
+      const sym=card.getAttribute('data-sym');
       if(!detail) return;
       const open=detail.style.display!=='none';
       detail.style.display=open?'none':'block';
       if(tog) tog.textContent=open?'▼':'▲';
+      if(sym){
+        if(open) WATCH_OPEN_IDS.delete(sym); else WATCH_OPEN_IDS.add(sym);
+        saveWatchOpenState();
+      }
     });
   });
   box.querySelectorAll('.chart-icon').forEach(btn=>{
@@ -2772,9 +2782,20 @@ let RECS=[];
 let WATCHLIST=[];
 let TRADED_SYMBOLS=[];
 const OPEN_REC_IDS=new Set();
+const WATCH_OPEN_IDS=(()=>{
+  try{
+    const rows=JSON.parse(localStorage.getItem('watchOpenSymbols')||'[]');
+    return new Set(Array.isArray(rows)?rows:[]);
+  }catch(e){ return new Set(); }
+})();
 let REPORT_PERIOD=Number(localStorage.getItem('reportPeriod')||7);
 let REC_TAB=localStorage.getItem('recTab')||'all';
 let recSyncBusy=false;
+
+function saveWatchOpenState(){
+  try{ localStorage.setItem('watchOpenSymbols',JSON.stringify([...WATCH_OPEN_IDS].slice(0,120))); }catch(e){}
+}
+
 async function saveRec(rec){
   if(!ACCESS_TOKEN) return;
   try{
