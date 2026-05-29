@@ -82,6 +82,8 @@
   .alert-tv{font-family:'Chakra Petch',monospace;font-size:9px;border:1px solid var(--line);border-radius:999px;padding:2px 6px;color:var(--dim);}
   .alert-close{margin-left:auto;width:23px;height:23px;border-radius:7px;border:1px solid var(--line);background:rgba(255,255,255,.02);color:var(--dim);cursor:pointer;}
   .alert-close:hover{color:var(--red);border-color:var(--red);}
+  .alert-toggle{width:auto;height:23px;border-radius:7px;border:1px solid var(--line);background:rgba(54,226,226,.06);color:var(--cyan);cursor:pointer;font-family:'Chakra Petch',monospace;font-size:10px;padding:0 7px;}
+  .alert-toggle:hover{border-color:var(--cyan);}
   .alert-line{font-size:11px;font-weight:800;color:var(--text);line-height:1.45;margin-bottom:8px;}
   .alert-metrics{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px;font-family:'Chakra Petch',monospace;}
   .alert-metrics .k{font-size:9px;color:var(--dimmer);letter-spacing:.5px;}
@@ -107,7 +109,14 @@
   .oi-resize-handle{height:18px;margin:8px 0 0;border:1px solid var(--line);border-radius:999px;background:var(--panel);display:flex;align-items:center;justify-content:center;cursor:ns-resize;touch-action:none;}
   .oi-resize-handle::before{content:"";width:76px;height:4px;border-radius:999px;background:linear-gradient(90deg,var(--cyan),var(--green));opacity:.65;}
   .oi-resize-handle:hover::before{opacity:1;}
-  body.resizing-oi{cursor:ns-resize;user-select:none;}
+  #panelAll .overview-grid>.col{height:var(--market-panel-height,522px);min-height:320px;display:flex;flex-direction:column;}
+  #panelAll .overview-grid>.col>.scroll-list,
+  #panelAll #listLongSignal,
+  #panelAll #listShortSignal{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) var(--panel);}
+  .market-resize-handle{height:18px;margin:8px 0 0;border:1px solid var(--line);border-radius:999px;background:var(--panel);display:flex;align-items:center;justify-content:center;cursor:ns-resize;touch-action:none;}
+  .market-resize-handle::before{content:"";width:76px;height:4px;border-radius:999px;background:linear-gradient(90deg,var(--amber),var(--cyan));opacity:.65;}
+  .market-resize-handle:hover::before{opacity:1;}
+  body.resizing-oi,body.resizing-market{cursor:ns-resize;user-select:none;}
 
   .coin{padding:11px 15px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .15s;display:flex;flex-direction:column;gap:5px;}
   .coin:last-child{border-bottom:none;}
@@ -285,6 +294,7 @@
           <div id="listShortSignal"></div>
         </div>
       </div>
+      <div class="market-resize-handle" id="marketResizeHandle" title="拖曳調整貨幣一覽高度"></div>
     </div>
     <div class="market-panel" id="panelWatch">
       <div class="single-panel">
@@ -934,6 +944,7 @@ function alertCardHTML(row){
       <span class="alert-sym">${esc(row.sym)}</span>
       <span class="alert-tv">TV</span>
       <span class="chip" style="color:${color};border-color:${color}">${esc(row.recommendation||'持倉異常')}</span>
+      <button class="alert-toggle" data-alert-toggle="${esc(row.alertId)}">${open?'收合':'展開資訊'}</button>
       <button class="alert-close" data-alert-close="${esc(row.alertId)}" title="關閉">×</button>
     </div>
     <div class="alert-line">${esc(row.baseType||row.type||'持倉異常')} · ${esc(row.recommendationReason||'等待更多資料確認')}</div>
@@ -963,6 +974,15 @@ function renderAlertBoard(){
     btn.onclick=(e)=>{
       e.stopPropagation();
       dismissAlert(btn.getAttribute('data-alert-close'));
+    };
+  });
+  document.querySelectorAll('[data-alert-toggle]').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      const id=btn.getAttribute('data-alert-toggle');
+      if(ALERT_OPEN_IDS.has(id)) ALERT_OPEN_IDS.delete(id); else ALERT_OPEN_IDS.add(id);
+      alertOpenSave();
+      renderAlertBoard();
     };
   });
   document.querySelectorAll('[data-alert-card-id]').forEach(card=>{
@@ -3743,6 +3763,40 @@ function initOiResize(){
   window.addEventListener('pointercancel',stop);
 }
 
+function setMarketPanelHeight(value,save=false){
+  const h=Math.max(320,Math.min(980,Math.round(Number(value)||522)));
+  document.documentElement.style.setProperty('--market-panel-height',h+'px');
+  if(save) try{localStorage.setItem('marketPanelHeight',String(h));}catch(e){}
+  return h;
+}
+
+function initMarketResize(){
+  setMarketPanelHeight(localStorage.getItem('marketPanelHeight')||522,false);
+  const handle=$('marketResizeHandle');
+  if(!handle||handle.dataset.boundResize) return;
+  handle.dataset.boundResize='1';
+  let startY=0,startH=0,dragging=false;
+  const stop=()=>{
+    if(!dragging) return;
+    dragging=false;
+    document.body.classList.remove('resizing-market');
+  };
+  handle.addEventListener('pointerdown',e=>{
+    dragging=true;
+    startY=e.clientY;
+    startH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--market-panel-height'))||522;
+    document.body.classList.add('resizing-market');
+    try{handle.setPointerCapture(e.pointerId);}catch(err){}
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove',e=>{
+    if(!dragging) return;
+    setMarketPanelHeight(startH+(e.clientY-startY),true);
+  });
+  window.addEventListener('pointerup',stop);
+  window.addEventListener('pointercancel',stop);
+}
+
 const PRICE_INTERVAL=1000;      // 每秒檢查 WS；價格由成交/ticker 推送更新
 const RESCAN_INTERVAL=60000;    // 完整掃描每 60 秒
 
@@ -3772,6 +3826,7 @@ function stopLive(){
 }
 $('autoToggle').addEventListener('click',()=>{ liveOn?stopLive():startLive(); });
 initOiResize();
+initMarketResize();
 setTimeout(()=>{
   if(!liveOn) startLive();
 },500);
