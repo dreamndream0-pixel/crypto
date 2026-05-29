@@ -337,9 +337,22 @@ async function fetchMarket(){
 }
 
 async function fetchLivePrices(){
-  const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=prices&_='+Date.now(),{cache:'no-store'});
-  if(!res.ok) throw new Error('即時價格回應錯誤 '+res.status);
-  return await res.json();
+  try{
+    const res=await fetch(PROXY_URL.replace(/\/$/,'')+'/?type=prices&_='+Date.now(),{cache:'no-store'});
+    if(!res.ok) throw new Error('即時價格回應錯誤 '+res.status);
+    return await res.json();
+  }catch(proxyErr){
+    const res=await fetch('https://fapi.binance.com/fapi/v1/ticker/price?_='+Date.now(),{cache:'no-store'});
+    if(!res.ok) throw proxyErr;
+    const rows=await res.json();
+    const prices={};
+    if(Array.isArray(rows)){
+      rows.filter(r=>String(r.symbol||'').endsWith('USDT')).forEach(r=>{
+        prices[exchangeSymbol(r.symbol)]=Number(r.price);
+      });
+    }
+    return {updated:Date.now(),prices};
+  }
 }
 
 async function fetchMarketContext(){
@@ -999,6 +1012,19 @@ function binanceInterval(interval){
   return interval;
 }
 
+function exchangeSymbol(raw){
+  return String(raw||'')
+    .toUpperCase()
+    .replace(/[-_/]?USDT(?:-SWAP)?$/,'')
+    .replace(/USDT$/,'');
+}
+
+function chunkArray(arr,size){
+  const out=[];
+  for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size));
+  return out;
+}
+
 function intervalMs(interval){
   if(interval==='1s') return 1000;
   if(interval==='30s') return 30000;
@@ -1048,7 +1074,7 @@ function buildSyntheticSeedRows(seed,interval,basePrice,now){
   }
   return rows;
 }
-let PRICE_WS=null,PRICE_WS_TIMER=null,PRICE_WS_MANUAL=false,PRICE_WS_KEY='';
+let PRICE_WS_TIMER=null,PRICE_WS_MANUAL=false,PRICE_WS_KEY='';
 let CHART_WS=null,CHART_WS_MANUAL=false;
 let lastRecRenderAt=0;
 
@@ -1120,7 +1146,7 @@ function connectChartWS(){
   if(!sym||!pair) return;
   CHART_WS_MANUAL=false;
   const stream=isSyntheticInterval(interval)
-    ? `${pair.toLowerCase()}@aggTrade/${pair.toLowerCase()}@ticker`
+    ? `${pair.toLowerCase()}@trade/${pair.toLowerCase()}@aggTrade/${pair.toLowerCase()}@ticker`
     : `${pair.toLowerCase()}@kline_${binanceInterval(interval)}`;
   CHART_WS=new WebSocket(`wss://fstream.binance.com/stream?streams=${stream}`);
   CHART_WS.onopen=()=>{
@@ -1131,7 +1157,7 @@ function connectChartWS(){
       const msg=JSON.parse(event.data);
       if(isSyntheticInterval(interval)){
         const d=msg.data||{};
-        if(d.e==='aggTrade'||(d.a!==undefined&&d.p!==undefined&&d.q!==undefined)){
+        if(d.e==='trade'||d.e==='aggTrade'||(d.p!==undefined&&d.q!==undefined&&(d.t!==undefined||d.a!==undefined))){
           const price=Number(d.p);
           const qty=Number(d.q||0);
           const ts=Number(d.T||Date.now());
@@ -2510,8 +2536,10 @@ function flash(msg,type){
 
 // ---------- 即時更新 ----------
 let priceTimer=null, rescanTimer=null, liveOn=false, lastChartRefresh=0, lastWsTickAt=0, wsMode='combined';
+let PRICE_WS_LIST=[];
 let lastPrices={}; // 記錄上次價格，判斷漲跌閃色
 let lastTradeTicks={}; // 成交流最後更新時間，用來避免 ticker 覆蓋實時成交價
+let lastPriceFallbackAt=0;
 let liveTextState='';
 
 function setLiveText(text){
@@ -2520,15 +2548,38 @@ function setLiveText(text){
   if($('liveText')) $('liveText').textContent=text;
 }
 
+function hasActivePriceWS(){
+  return PRICE_WS_LIST.some(ws=>ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING));
+}
+
+function handlePriceWsPayload(d){
+  const sym=exchangeSymbol(d.s);
+  if(!sym) return;
+  if(d.e==='trade'||d.e==='aggTrade'||(d.p!==undefined&&d.q!==undefined&&(d.t!==undefined||d.a!==undefined))){
+    const price=Number(d.p);
+    if(Number.isFinite(price)){
+      lastTradeTicks[sym]=Date.now();
+      updateLivePrice(sym,price,'成交');
+    }
+    return;
+  }
+  if(d.e==='24hrTicker'||d.c!==undefined){
+    updateLiveChange(sym,Number(d.P));
+    const price=Number(d.c);
+    if(Number.isFinite(price)&&(!lastTradeTicks[sym]||Date.now()-lastTradeTicks[sym]>1800)){
+      updateLivePrice(sym,price,'Ticker過渡');
+    }
+  }
+}
+
 function connectPriceWS(mode='combined',force=false){
   const pairs=[...new Set(MKT.slice(0,60).map(c=>String(c.pair||`${c.sym}USDT`).toLowerCase()))];
   if(pairs.length===0){
     setLiveText('等待掃描清單');
     return;
   }
-  const streams=pairs.flatMap(p=>[`${p}@aggTrade`,`${p}@ticker`]).join('/');
-  const streamKey=`combined:${streams}`;
-  if(!force&&PRICE_WS&&PRICE_WS_KEY===streamKey&&(PRICE_WS.readyState===WebSocket.OPEN||PRICE_WS.readyState===WebSocket.CONNECTING)){
+  const streamKey=`combined:${pairs.join(',')}`;
+  if(!force&&PRICE_WS_KEY===streamKey&&hasActivePriceWS()){
     return;
   }
   closePriceWS();
@@ -2536,66 +2587,52 @@ function connectPriceWS(mode='combined',force=false){
   wsMode='combined';
   lastWsTickAt=Date.now();
   PRICE_WS_KEY=streamKey;
-  const url=`wss://fstream.binance.com/stream?streams=${streams}`;
-  PRICE_WS=new WebSocket(url);
-  PRICE_WS.onopen=()=>{
-    setLiveText(`WS 成交流推送 · ${pairs.length} 幣`);
-    setTimeout(()=>{
-      if(liveOn&&PRICE_WS&&Date.now()-lastWsTickAt>4300&&mode==='combined'){
-        setLiveText(`WS 成交流等待中 · ${pairs.length} 幣`);
+  PRICE_WS_LIST=chunkArray(pairs,18).map((chunk,idx)=>{
+    const streams=chunk.flatMap(p=>[`${p}@trade`,`${p}@aggTrade`,`${p}@ticker`]).join('/');
+    const ws=new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
+    ws.onopen=()=>{
+      if(idx===0) setLiveText(`WS 實時成交推送 · ${pairs.length} 幣`);
+      setTimeout(()=>{
+        if(liveOn&&Date.now()-lastWsTickAt>4300&&mode==='combined'){
+          setLiveText(`WS 實時成交等待中 · ${pairs.length} 幣`);
+        }
+      },4500);
+    };
+    ws.onmessage=(event)=>{
+      try{
+        const msg=JSON.parse(event.data);
+        const payload=Array.isArray(msg)?msg:(Array.isArray(msg.data)?msg.data:[msg.data||msg]);
+        lastWsTickAt=Date.now();
+        payload.forEach(handlePriceWsPayload);
+      }catch(e){}
+    };
+    ws.onclose=()=>{
+      if(!PRICE_WS_MANUAL&&liveOn){
+        setLiveText('WS 重連中');
+        clearTimeout(PRICE_WS_TIMER);
+        PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2200);
       }
-    },4500);
-  };
-  PRICE_WS.onmessage=(event)=>{
-    try{
-      const msg=JSON.parse(event.data);
-      const payload=Array.isArray(msg)?msg:(Array.isArray(msg.data)?msg.data:[msg.data||msg]);
-      lastWsTickAt=Date.now();
-      payload.forEach(d=>{
-        const sym=String(d.s||'').replace('USDT','');
-        if(!sym) return;
-        if(d.e==='aggTrade'||(d.a!==undefined&&d.p!==undefined&&d.q!==undefined&&d.m!==undefined)){
-          const price=Number(d.p);
-          if(Number.isFinite(price)){
-            lastTradeTicks[sym]=Date.now();
-            updateLivePrice(sym,price,'成交');
-          }
-          return;
-        }
-        if(d.e==='24hrTicker'||d.c!==undefined){
-          updateLiveChange(sym,Number(d.P));
-          const price=Number(d.c);
-          if(Number.isFinite(price)&&(!lastTradeTicks[sym]||Date.now()-lastTradeTicks[sym]>1800)){
-            updateLivePrice(sym,price,'Ticker過渡');
-          }
-        }
-      });
-    }catch(e){}
-  };
-  PRICE_WS.onclose=()=>{
-    if(!PRICE_WS_MANUAL&&liveOn){
-      setLiveText('WS 重連中');
-      clearTimeout(PRICE_WS_TIMER);
-      PRICE_WS_TIMER=setTimeout(()=>connectPriceWS('combined',true),2200);
-    }
-  };
-  PRICE_WS.onerror=()=>{
-    setLiveText('WS 錯誤 · 重連中');
-    try{PRICE_WS.close();}catch(e){}
-  };
+    };
+    ws.onerror=()=>{
+      setLiveText('WS 錯誤 · 重連中');
+      try{ws.close();}catch(e){}
+    };
+    return ws;
+  });
 }
 
 function closePriceWS(){
   PRICE_WS_MANUAL=true;
   clearTimeout(PRICE_WS_TIMER);
-  if(PRICE_WS){
+  PRICE_WS_LIST.forEach(ws=>{
+    if(!ws) return;
     try{
-      PRICE_WS.onclose=null;
-      PRICE_WS.onerror=null;
-      PRICE_WS.close();
+      ws.onclose=null;
+      ws.onerror=null;
+      ws.close();
     }catch(e){}
-  }
-  PRICE_WS=null;
+  });
+  PRICE_WS_LIST=[];
   PRICE_WS_KEY='';
 }
 
@@ -2631,14 +2668,28 @@ function updateLiveChange(sym,chg24){
   if(idx>=0) MKT[idx].chg24=+chg24.toFixed(2);
 }
 
-// 輕量：只監控成交流連線；價格不再用 REST/ticker 覆蓋，避免狀態與價格跳回舊模式
+async function syncLatestExchangePrices(){
+  const d=await fetchLivePrices();
+  Object.entries(d.prices||{}).forEach(([sym,price])=>{
+    const s=exchangeSymbol(sym);
+    const p=Number(price);
+    if(s&&Number.isFinite(p)) updateLivePrice(s,p,'交易所最新成交價');
+  });
+}
+
+// 輕量：優先監控成交流；若瀏覽器收不到 WS，就用交易所最新價靜默補動。
 async function tickPrices(){
   if(document.hidden) return; // 分頁在背景時跳過，省請求
   try{
-    if(liveOn&&(!PRICE_WS||PRICE_WS.readyState===WebSocket.CLOSED||Date.now()-lastWsTickAt>12000)){
-      if(!PRICE_WS||PRICE_WS.readyState===WebSocket.CLOSED) setLiveText('WS 重連中');
-      connectPriceWS('combined',true);
-      return;
+    if(liveOn&&(!hasActivePriceWS()||Date.now()-lastWsTickAt>2800)){
+      if(!hasActivePriceWS()||Date.now()-lastWsTickAt>12000){
+        if(!hasActivePriceWS()) setLiveText('WS 重連中');
+        connectPriceWS('combined',true);
+      }
+      if(Date.now()-lastPriceFallbackAt>1200){
+        lastPriceFallbackAt=Date.now();
+        await syncLatestExchangePrices();
+      }
     }
   }catch(e){
     if(liveOn) setLiveText('WS 等待重連');
