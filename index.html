@@ -93,6 +93,7 @@
   .alert-card.open .alert-card-detail{display:block;}
   .alert-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;color:var(--dim);font-family:'Chakra Petch',monospace;font-size:11px;}
   .alert-card-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+  .alert-card-actions-inline{padding-top:9px;border-top:1px solid rgba(255,255,255,.04);}
   .track-list{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) var(--panel);}
   .track-card{padding:12px 14px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(17,21,31,.72),rgba(13,17,25,.9));}
   .track-card:last-child{border-bottom:none;}
@@ -908,7 +909,6 @@ function alertDetailHTML(row){
   const pct=alertPerf(row,row.currentPrice??row.price);
   const c=MKT.find(x=>x.sym===row.sym)||row;
   const color=row.dir==='up'?'var(--green)':'var(--red)';
-  const tracked=isAlertTracked(row.alertId);
   return `<div class="alert-detail-grid">
     <div>方向：<span style="color:${color}">${esc(row.recommendation||'—')}</span></div>
     <div>警報後：<span data-alert-perf-sym="${esc(row.sym)}" data-alert-perf-id="${esc(row.alertId)}">${pct===null?'—':(pct>0?'+':'')+pct+'%'}</span></div>
@@ -923,11 +923,7 @@ function alertDetailHTML(row){
     <div>OKX價格：<span data-live-sym="${esc(row.sym)}" data-live="okxPrice">${c.okx?.price?'$'+formatPrice(c.okx.price):'—'}</span></div>
     <div>SMC：${esc(c.smc?.structure??'—')} / ${esc(c.smc?.zone??'—')}</div>
   </div>
-  <div class="alert-reason">${(row.triggers||[]).map(x=>esc(x.label)).join(' · ')||'—'}</div>
-  <div class="alert-card-actions">
-    <button class="btn ghost alert-track-btn" data-alert-track="${esc(row.alertId)}" ${tracked?'disabled':''} style="padding:7px 10px;font-size:11px">${tracked?'✓ 已追蹤':'＋ 加入異常追蹤'}</button>
-    <button class="btn alert-analyze-btn" data-alert-analyze="${esc(row.sym)}" style="padding:7px 10px;font-size:11px">AI討論 / 準備戰績</button>
-  </div>`;
+  <div class="alert-reason">${(row.triggers||[]).map(x=>esc(x.label)).join(' · ')||'—'}</div>`;
 }
 
 function alertCardHTML(row){
@@ -938,6 +934,7 @@ function alertCardHTML(row){
   const pctText=pct===null?'—':`${pct>0?'+':''}${pct}%`;
   const pctColor=pct===null?'var(--dim)':pct>=0?'var(--green)':'var(--red)';
   const open=ALERT_OPEN_IDS.has(row.alertId);
+  const tracked=isAlertTracked(row.alertId);
   return `<div class="alert-card ${isBull?'bull':'bear'} ${open?'open':''}" data-alert-card-id="${esc(row.alertId)}">
     <div class="alert-card-top">
       <span class="alert-token">⚡</span>
@@ -955,8 +952,25 @@ function alertCardHTML(row){
       <div><div class="k">觸發時間</div><div class="v">${t}</div></div>
     </div>
     <div class="alert-reason">${(row.triggers||[]).slice(0,4).map(x=>esc(x.label)).join(' · ')}</div>
+    <div class="alert-card-actions alert-card-actions-inline">
+      <button class="btn ghost alert-track-btn" data-alert-track="${esc(row.alertId)}" ${tracked?'disabled':''} style="padding:7px 10px;font-size:11px">${tracked?'✓ 已追蹤':'＋ 加入警報追蹤'}</button>
+      <button class="btn alert-analyze-btn" data-alert-analyze="${esc(row.sym)}" style="padding:7px 10px;font-size:11px">AI討論 / 準備戰績</button>
+    </div>
     <div class="alert-card-detail">${alertDetailHTML(row)}</div>
   </div>`;
+}
+
+function setAlertCardOpen(alertId,open){
+  const id=String(alertId||'');
+  if(!id) return;
+  if(open) ALERT_OPEN_IDS.add(id); else ALERT_OPEN_IDS.delete(id);
+  alertOpenSave();
+  document.querySelectorAll('[data-alert-card-id]').forEach(card=>{
+    if(card.getAttribute('data-alert-card-id')!==id) return;
+    card.classList.toggle('open',open);
+    const btn=card.querySelector('[data-alert-toggle]');
+    if(btn) btn.textContent=open?'收合':'展開資訊';
+  });
 }
 
 function renderAlertBoard(){
@@ -980,18 +994,14 @@ function renderAlertBoard(){
     btn.onclick=(e)=>{
       e.stopPropagation();
       const id=btn.getAttribute('data-alert-toggle');
-      if(ALERT_OPEN_IDS.has(id)) ALERT_OPEN_IDS.delete(id); else ALERT_OPEN_IDS.add(id);
-      alertOpenSave();
-      renderAlertBoard();
+      setAlertCardOpen(id,!ALERT_OPEN_IDS.has(id));
     };
   });
   document.querySelectorAll('[data-alert-card-id]').forEach(card=>{
     card.onclick=(e)=>{
       if(e.target.closest('button')) return;
       const id=card.getAttribute('data-alert-card-id');
-      if(ALERT_OPEN_IDS.has(id)) ALERT_OPEN_IDS.delete(id); else ALERT_OPEN_IDS.add(id);
-      alertOpenSave();
-      renderAlertBoard();
+      setAlertCardOpen(id,!ALERT_OPEN_IDS.has(id));
     };
   });
   document.querySelectorAll('[data-alert-track]').forEach(btn=>{
